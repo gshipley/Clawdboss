@@ -43,13 +43,17 @@ curl -fsSL https://openclaw.ai/install.sh | bash
 ```
 
 The setup wizard will:
-1. Prompt for your API keys and Discord credentials
-2. Create your `.env` file (gitignored, never committed)
-3. Generate `openclaw.json` with `${VAR}` references to your `.env`
-4. Create agent workspaces with security rules + WAL Protocol pre-baked
-5. Offer optional tools: Graphthulhu, ApiTap, Scrapling, GitHub, Playwright, OCTAVE, Humanizer, Self-Improving Agent, Find Skills, Marketing Skills, Healthcheck, Clawmetry, ClawSec
-6. Run OpenClaw's built-in skills wizard (Whisper, Nano Banana Pro, mcporter, TTS, email, etc.)
-7. Start the gateway
+1. Ask about **you** — name, role, what you do, how you want to use your agent
+2. Ask about **your agent** — name, personality, mission, domain expertise
+3. Prompt for your API keys and Discord credentials
+4. Create your `.env` file (gitignored, never committed)
+5. Generate `openclaw.json` with `${VAR}` references to your `.env`
+6. Create agent workspaces with security rules + WAL Protocol pre-baked
+7. Offer optional tools: Graphthulhu, ApiTap, Scrapling, GitHub, Playwright, OCTAVE, Humanizer, Self-Improving Agent, Find Skills, Marketing Skills, Healthcheck, Clawmetry, ClawSec
+8. Run OpenClaw's built-in skills wizard (Whisper, Nano Banana Pro, mcporter, TTS, email, etc.)
+9. Start the gateway
+
+Your agent starts its first session knowing who you are, what you do, and what personality it should have — zero manual config file editing needed.
 
 ## Configuration Tiers
 
@@ -99,13 +103,18 @@ During setup, choose your preferred interface:
 
 NanoFlow Console is a branded web dashboard built on [ClawSuite](https://github.com/outsourc-e/clawsuite) (MIT license).
 
-## Context Persistence (WAL Protocol)
+## Context Persistence (WAL Protocol + 3-Layer Memory)
 
 Clawdboss agents don't lose your corrections and decisions when context resets:
 
+- **3-Layer Memory** — L1 (Brain, loaded every turn) → L2 (Memory, searched semantically) → L3 (Reference, opened on demand)
+- **L1 File Budget** — 500-1,000 tokens per workspace file to prevent agents from skimming
 - **SESSION-STATE.md** — Agent writes important details here BEFORE responding (Write-Ahead Log)
 - **Working Buffer** — At ~60% context, every exchange is logged to survive compaction
 - **Compaction Recovery** — Agent reads buffer + state files after context loss, never asks "what were we doing?"
+- **Breadcrumbs** — Topic-organized files in `memory/` that point to deep reference docs
+- **Trim** — Weekly maintenance to keep L1 files lean, move excess to L2/L3
+- **Recalibrate** — Drift correction, forces re-read of all files and behavior comparison
 
 See [docs/security.md](docs/security.md) for the full architecture.
 

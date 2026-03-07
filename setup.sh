@@ -159,7 +159,9 @@ preflight() {
 # ============================================================
 
 collect_user_info() {
-  echo -e "${BOLD}--- Your Info ---${NC}"
+  echo -e "${BOLD}--- About You ---${NC}"
+  echo ""
+  info "Let's get to know you so your agent can be genuinely useful from day one."
   echo ""
 
   while true; do
@@ -173,6 +175,72 @@ collect_user_info() {
   read -r USER_TIMEZONE
   USER_TIMEZONE=$(validate_timezone "${USER_TIMEZONE:-UTC}")
 
+  ask "Your location (city/region, e.g., 'Irvine, California' or 'London, UK')"
+  read -r USER_LOCATION
+  USER_LOCATION="${USER_LOCATION:-}"
+
+  ask "Your pronouns (e.g., he/him, she/her, they/them)"
+  read -r USER_PRONOUNS
+  USER_PRONOUNS="${USER_PRONOUNS:-they/them}"
+
+  echo ""
+  echo -e "${BOLD}What do you do? (pick the closest)${NC}"
+  echo ""
+  echo "  1) Software developer / engineer"
+  echo "  2) Founder / business owner"
+  echo "  3) Marketer / growth"
+  echo "  4) Creative (design, writing, music)"
+  echo "  5) Operations / project management"
+  echo "  6) Student / researcher"
+  echo "  7) Other"
+  echo ""
+  ask "Your role [1-7]"
+  read -r USER_ROLE_CHOICE
+  USER_ROLE_CHOICE="${USER_ROLE_CHOICE:-7}"
+
+  case "$USER_ROLE_CHOICE" in
+    1) USER_ROLE="Software developer" ;;
+    2) USER_ROLE="Founder / business owner" ;;
+    3) USER_ROLE="Marketer / growth" ;;
+    4) USER_ROLE="Creative (design, writing, music)" ;;
+    5) USER_ROLE="Operations / project management" ;;
+    6) USER_ROLE="Student / researcher" ;;
+    *) USER_ROLE="Other" ;;
+  esac
+
+  echo ""
+  ask "Brief description of what you do (e.g., 'I run a real estate company' or 'Full-stack dev at a startup')"
+  read -r USER_DESCRIPTION
+  USER_DESCRIPTION="${USER_DESCRIPTION:-}"
+
+  echo ""
+  echo -e "${BOLD}What will you primarily use your agent for?${NC}"
+  echo ""
+  echo "  1) Coding & development (write code, debug, review PRs)"
+  echo "  2) Business operations (email, scheduling, research, CRM)"
+  echo "  3) Marketing & content (copywriting, social media, SEO)"
+  echo "  4) Research & analysis (web research, data analysis, reports)"
+  echo "  5) Personal assistant (daily tasks, reminders, organization)"
+  echo "  6) All of the above / general purpose"
+  echo ""
+  ask "Primary use case [1-6]"
+  read -r USER_USECASE_CHOICE
+  USER_USECASE_CHOICE="${USER_USECASE_CHOICE:-6}"
+
+  case "$USER_USECASE_CHOICE" in
+    1) USER_USECASE="Coding & development" ;;
+    2) USER_USECASE="Business operations" ;;
+    3) USER_USECASE="Marketing & content creation" ;;
+    4) USER_USECASE="Research & analysis" ;;
+    5) USER_USECASE="Personal assistant" ;;
+    *) USER_USECASE="General purpose" ;;
+  esac
+
+  echo ""
+  ask "Anything else your agent should know about you? (hobbies, communication style, pet peeves — or press Enter to skip)"
+  read -r USER_EXTRA
+  USER_EXTRA="${USER_EXTRA:-}"
+
   echo ""
 }
 
@@ -181,7 +249,9 @@ collect_user_info() {
 # ============================================================
 
 collect_agent_info() {
-  echo -e "${BOLD}--- Main Agent ---${NC}"
+  echo -e "${BOLD}--- Your Agent ---${NC}"
+  echo ""
+  info "Time to create your AI agent. Give it a name, personality, and purpose."
   echo ""
 
   while true; do
@@ -198,6 +268,44 @@ collect_agent_info() {
   ask "Agent emoji (e.g., 🤖, 🦊, ⚡)"
   read -r AGENT_EMOJI
   AGENT_EMOJI="${AGENT_EMOJI:-🤖}"
+
+  echo ""
+  echo -e "${BOLD}What vibe should your agent have?${NC}"
+  echo ""
+  echo "  1) Professional — Direct, efficient, business-like"
+  echo "  2) Friendly — Warm, conversational, approachable"
+  echo "  3) Creative — Bold, expressive, thinks outside the box"
+  echo "  4) Technical — Precise, detailed, loves data and specs"
+  echo "  5) Witty — Clever, dry humor, personality-forward"
+  echo "  6) Custom — You'll describe it yourself"
+  echo ""
+  ask "Agent personality [1-6]"
+  read -r AGENT_VIBE_CHOICE
+  AGENT_VIBE_CHOICE="${AGENT_VIBE_CHOICE:-2}"
+
+  case "$AGENT_VIBE_CHOICE" in
+    1) AGENT_VIBE="Professional — direct, efficient, no-nonsense. Gets to the point. Values clarity over charm." ;;
+    2) AGENT_VIBE="Friendly — warm, conversational, approachable. Feels like talking to a helpful colleague who genuinely cares." ;;
+    3) AGENT_VIBE="Creative — bold, expressive, thinks outside the box. Not afraid to suggest unexpected ideas or take creative risks." ;;
+    4) AGENT_VIBE="Technical — precise, detailed, data-driven. Loves specs, accuracy, and thoroughness. Shows its work." ;;
+    5) AGENT_VIBE="Witty — clever, dry humor, personality-forward. Smart and fun without being annoying. Knows when to be serious." ;;
+    6)
+      ask "Describe your agent's personality in a sentence or two"
+      read -r AGENT_VIBE
+      AGENT_VIBE="${AGENT_VIBE:-Helpful and adaptable}"
+      ;;
+    *) AGENT_VIBE="Friendly — warm, conversational, approachable." ;;
+  esac
+
+  echo ""
+  ask "What's your agent's mission? (e.g., 'Help me build and ship software faster' or 'Manage my business operations') — or press Enter for default"
+  read -r AGENT_MISSION
+  AGENT_MISSION="${AGENT_MISSION:-Help ${USER_NAME} get things done efficiently and thoughtfully}"
+
+  echo ""
+  ask "Any specific skills or knowledge your agent should emphasize? (e.g., 'Python expert', 'knows real estate', 'marketing guru') — or press Enter to skip"
+  read -r AGENT_EXPERTISE
+  AGENT_EXPERTISE="${AGENT_EXPERTISE:-}"
 
   echo ""
   echo -e "${BOLD}--- Agent Tier ---${NC}"
@@ -720,20 +828,54 @@ deploy_workspaces() {
   for f in AGENTS.md SOUL.md USER.md IDENTITY.md TOOLS.md HEARTBEAT.md; do
     if [ -f "$TEMPLATES_DIR/workspace/$f" ]; then
       python3 -c "
-import sys
+import sys, re
 content = open(sys.argv[1]).read()
+
+# Basic replacements
 replacements = {
     '__AGENT_NAME__': sys.argv[3],
     '__AGENT_PRONOUNS__': sys.argv[4],
     '__AGENT_EMOJI__': sys.argv[5],
     '__USER_NAME__': sys.argv[6],
     '__USER_TIMEZONE__': sys.argv[7],
+    '__USER_PRONOUNS__': sys.argv[8],
+    '__AGENT_VIBE__': sys.argv[9],
+    '__AGENT_MISSION__': sys.argv[10],
+    '__USER_USECASE__': sys.argv[11],
 }
 for k, v in replacements.items():
     content = content.replace(k, v)
+
+# Conditional blocks — only show sections with content
+user_location = sys.argv[12]
+user_role = sys.argv[13]
+user_desc = sys.argv[14]
+agent_expertise = sys.argv[15]
+user_extra = sys.argv[16]
+
+content = content.replace('__USER_LOCATION_LINE__', f'- **Location:** {user_location}' if user_location else '')
+
+# Build background block
+bg_parts = []
+if user_role: bg_parts.append(f'**Role:** {user_role}')
+if user_desc: bg_parts.append(user_desc)
+if bg_parts:
+    content = content.replace('__USER_BACKGROUND_BLOCK__', '## Background\n\n' + '\n'.join(bg_parts))
+else:
+    content = content.replace('__USER_BACKGROUND_BLOCK__', '')
+
+content = content.replace('__AGENT_EXPERTISE_BLOCK__', f'**Domain expertise:** {agent_expertise}' if agent_expertise else '')
+content = content.replace('__USER_EXTRA_BLOCK__', f'## Extra Context\n\n{user_extra}' if user_extra else '')
+
+# Clean up blank lines from empty blocks
+content = re.sub(r'\n{3,}', '\n\n', content)
+
 open(sys.argv[2], 'w').write(content)
 " "$TEMPLATES_DIR/workspace/$f" "$WORKSPACE_DIR/$f" \
-  "$AGENT_NAME" "$AGENT_PRONOUNS" "$AGENT_EMOJI" "$USER_NAME" "$USER_TIMEZONE"
+  "$AGENT_NAME" "$AGENT_PRONOUNS" "$AGENT_EMOJI" \
+  "$USER_NAME" "$USER_TIMEZONE" "${USER_PRONOUNS:-they/them}" \
+  "$AGENT_VIBE" "$AGENT_MISSION" "$USER_USECASE" \
+  "${USER_LOCATION:-}" "$USER_ROLE" "${USER_DESCRIPTION:-}" "${AGENT_EXPERTISE:-}" "${USER_EXTRA:-}"
     fi
   done
 
@@ -801,12 +943,39 @@ open(sys.argv[2], 'w').write(content)
 " "$TEMPLATES_DIR/agents/$agent_type/SOUL.md" "$agent_ws/SOUL.md" "$agent_name"
 
     python3 -c "
-import sys
+import sys, re
 content = open(sys.argv[1]).read()
-content = content.replace('__USER_NAME__', sys.argv[3])
-content = content.replace('__USER_TIMEZONE__', sys.argv[4])
+replacements = {
+    '__USER_NAME__': sys.argv[3],
+    '__USER_TIMEZONE__': sys.argv[4],
+    '__USER_PRONOUNS__': sys.argv[5],
+    '__USER_USECASE__': sys.argv[6],
+}
+for k, v in replacements.items():
+    content = content.replace(k, v)
+
+user_location = sys.argv[7]
+user_role = sys.argv[8]
+user_desc = sys.argv[9]
+user_extra = sys.argv[10]
+
+content = content.replace('__USER_LOCATION_LINE__', f'- **Location:** {user_location}' if user_location else '')
+
+bg_parts = []
+if user_role: bg_parts.append(f'**Role:** {user_role}')
+if user_desc: bg_parts.append(user_desc)
+if bg_parts:
+    content = content.replace('__USER_BACKGROUND_BLOCK__', '## Background\n\n' + '\n'.join(bg_parts))
+else:
+    content = content.replace('__USER_BACKGROUND_BLOCK__', '')
+
+content = content.replace('__USER_EXTRA_BLOCK__', f'## Extra Context\n\n{user_extra}' if user_extra else '')
+
+content = re.sub(r'\n{3,}', '\n\n', content)
 open(sys.argv[2], 'w').write(content)
-" "$TEMPLATES_DIR/workspace/USER.md" "$agent_ws/USER.md" "$USER_NAME" "$USER_TIMEZONE"
+" "$TEMPLATES_DIR/workspace/USER.md" "$agent_ws/USER.md" \
+  "$USER_NAME" "$USER_TIMEZONE" "${USER_PRONOUNS:-they/them}" \
+  "$USER_USECASE" "${USER_LOCATION:-}" "$USER_ROLE" "${USER_DESCRIPTION:-}" "${USER_EXTRA:-}"
 
     cp "$TEMPLATES_DIR/workspace/TOOLS.md" "$agent_ws/TOOLS.md"
 
