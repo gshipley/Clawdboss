@@ -1849,6 +1849,7 @@ show_summary() {
   echo "    • Config uses \${VAR} references — no plaintext keys"
   echo "    • All agents have prompt injection defense pre-configured"
   echo "    • Anti-loop rules prevent token-burning attacks"
+  echo "    • Server hardening applied (firewall, SSH, port protection)"
   echo ""
 }
 
@@ -2253,7 +2254,173 @@ CADDYEOF
     echo ""
   fi
 
+  # ---- Server Hardening ----
+  harden_server
+
   show_summary
+}
+
+# ============================================================
+# Server Hardening (post-install)
+# ============================================================
+
+harden_server() {
+  echo ""
+  echo -e "${GREEN}╔══════════════════════════════════════════════╗${NC}"
+  echo -e "${GREEN}║${NC}  ${BOLD}🛡️  Server Hardening${NC}                        ${GREEN}║${NC}"
+  echo -e "${GREEN}╚══════════════════════════════════════════════╝${NC}"
+  echo ""
+  info "Recommended security hardening for VPS/server deployments."
+  info "Skip if running locally (laptop/workstation) or inside a container."
+  echo ""
+  ask "Run server hardening? [Y/n]"
+  read -r RUN_HARDENING
+  RUN_HARDENING="${RUN_HARDENING:-Y}"
+
+  if [[ ! "$RUN_HARDENING" =~ ^[Yy] ]]; then
+    info "Skipped server hardening."
+    return
+  fi
+
+  local CHANGES_MADE=false
+
+  # --- 1. Firewall (UFW) ---
+  echo ""
+  echo -e "  ${BOLD}1. Firewall (UFW)${NC}"
+  echo ""
+
+  if command -v ufw &>/dev/null; then
+    local UFW_STATUS
+    UFW_STATUS=$(ufw status 2>/dev/null | head -1)
+    if [[ "$UFW_STATUS" == *"inactive"* ]]; then
+      warn "Firewall is INACTIVE — all ports are exposed to the internet."
+      info "This will allow SSH (port 22) and block everything else from outside."
+      ask "Enable UFW firewall? [Y/n]"
+      read -r ENABLE_UFW
+      ENABLE_UFW="${ENABLE_UFW:-Y}"
+      if [[ "$ENABLE_UFW" =~ ^[Yy] ]]; then
+        ufw allow 22/tcp comment "SSH" >/dev/null 2>&1
+        # If Caddy/SSL was configured, allow HTTPS too
+        if [ "${CONSOLE_SECURITY:-1}" = "2" ] && [ -n "${CONSOLE_DOMAIN:-}" ]; then
+          ufw allow 80/tcp comment "HTTP (Caddy redirect)" >/dev/null 2>&1
+          ufw allow 443/tcp comment "HTTPS (Caddy)" >/dev/null 2>&1
+          info "Allowed ports 80/443 for Caddy SSL"
+        fi
+        echo "y" | ufw enable >/dev/null 2>&1
+        success "Firewall enabled (SSH allowed, rest blocked from outside)"
+        CHANGES_MADE=true
+      else
+        warn "Skipped — firewall remains inactive"
+      fi
+    else
+      success "Firewall already active"
+    fi
+  else
+    info "Installing UFW..."
+    if apt-get install -y -qq ufw 2>/dev/null; then
+      ufw allow 22/tcp comment "SSH" >/dev/null 2>&1
+      if [ "${CONSOLE_SECURITY:-1}" = "2" ] && [ -n "${CONSOLE_DOMAIN:-}" ]; then
+        ufw allow 80/tcp comment "HTTP (Caddy redirect)" >/dev/null 2>&1
+        ufw allow 443/tcp comment "HTTPS (Caddy)" >/dev/null 2>&1
+      fi
+      echo "y" | ufw enable >/dev/null 2>&1
+      success "UFW installed and enabled (SSH allowed)"
+      CHANGES_MADE=true
+    else
+      warn "Could not install UFW. Install manually: apt-get install ufw"
+    fi
+  fi
+
+  # --- 2. Block external access to copilot-api port 4141 ---
+  if [ "$LLM_PROVIDER" = "copilot" ]; then
+    echo ""
+    echo -e "  ${BOLD}2. Copilot API Port Protection${NC}"
+    echo ""
+    info "copilot-api binds to 0.0.0.0:4141 by default (no --host flag)."
+    info "This means it's accessible from the internet if firewall is off."
+
+    if command -v ufw &>/dev/null; then
+      # UFW handles this — port 4141 isn't in the allow list, so it's blocked
+      local UFW_STATUS_NOW
+      UFW_STATUS_NOW=$(ufw status 2>/dev/null | head -1)
+      if [[ "$UFW_STATUS_NOW" == *"active"* ]]; then
+        success "Port 4141 is blocked from external access by UFW"
+      else
+        warn "UFW is not active — port 4141 may be exposed"
+        info "Enable UFW or manually block: ufw deny in on any to any port 4141"
+      fi
+    else
+      warn "No firewall detected — port 4141 may be internet-exposed"
+      info "Bind copilot-api to localhost with iptables:"
+      info "  iptables -A INPUT -p tcp --dport 4141 ! -s 127.0.0.1 -j DROP"
+    fi
+  fi
+
+  # --- 3. SSH Hardening ---
+  echo ""
+  echo -e "  ${BOLD}3. SSH Hardening${NC}"
+  echo ""
+
+  local SSHD_CONFIG="/etc/ssh/sshd_config"
+  if [ -f "$SSHD_CONFIG" ]; then
+    local CURRENT_ROOT_LOGIN
+    CURRENT_ROOT_LOGIN=$(grep -E "^\s*PermitRootLogin\s+" "$SSHD_CONFIG" 2>/dev/null | awk '{print $2}' | tail -1)
+
+    if [ "$CURRENT_ROOT_LOGIN" = "yes" ]; then
+      warn "PermitRootLogin is set to 'yes' — direct root login via password is allowed."
+      info "Changing to 'prohibit-password' allows key-based root login only."
+      ask "Harden SSH root login? [Y/n]"
+      read -r HARDEN_SSH
+      HARDEN_SSH="${HARDEN_SSH:-Y}"
+      if [[ "$HARDEN_SSH" =~ ^[Yy] ]]; then
+        # Backup sshd_config
+        cp "$SSHD_CONFIG" "${SSHD_CONFIG}.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null
+        # Replace PermitRootLogin yes with prohibit-password
+        sed -i 's/^\s*PermitRootLogin\s\+yes/PermitRootLogin prohibit-password/' "$SSHD_CONFIG"
+        # Restart SSH
+        if systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null; then
+          success "PermitRootLogin set to 'prohibit-password' — SSH restarted"
+          CHANGES_MADE=true
+        else
+          warn "Could not restart SSH. Run manually: systemctl restart sshd"
+        fi
+      else
+        warn "Skipped — PermitRootLogin remains 'yes'"
+      fi
+    elif [ "$CURRENT_ROOT_LOGIN" = "prohibit-password" ] || [ "$CURRENT_ROOT_LOGIN" = "no" ]; then
+      success "SSH root login already hardened (PermitRootLogin=$CURRENT_ROOT_LOGIN)"
+    else
+      info "PermitRootLogin not explicitly set (default is usually 'prohibit-password')"
+    fi
+  else
+    info "sshd_config not found — SSH hardening skipped"
+  fi
+
+  # --- 4. Non-root warning ---
+  echo ""
+  echo -e "  ${BOLD}4. Service Account${NC}"
+  echo ""
+
+  if [ "$(id -u)" = "0" ]; then
+    warn "You're running as root. Consider creating a dedicated service user."
+    info "Running as root means any agent compromise = full system access."
+    echo ""
+    info "To set up a service user later:"
+    info "  adduser --system --shell /bin/bash openclaw"
+    info "  mkdir -p /home/openclaw/.openclaw"
+    info "  cp -r ~/.openclaw/* /home/openclaw/.openclaw/"
+    info "  chown -R openclaw: /home/openclaw"
+    info "  Then run OpenClaw as that user: su - openclaw -c 'openclaw gateway start'"
+  else
+    success "Running as non-root user ($(whoami)) — good practice"
+  fi
+
+  echo ""
+  if [ "$CHANGES_MADE" = true ]; then
+    success "Server hardening complete!"
+  else
+    info "No hardening changes applied."
+  fi
 }
 
 main "$@"
