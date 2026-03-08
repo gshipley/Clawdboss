@@ -165,6 +165,68 @@ The setup wizard offers each of these individually. All are free and open-source
 
 See [docs/recommended-tools.md](docs/recommended-tools.md) for detailed install guides.
 
+## After Install — Getting Your Agent Running
+
+Once the wizard finishes, follow the next steps it shows:
+
+### 1. Start the LLM Provider
+
+**GitHub Copilot (proxy):**
+```bash
+# First run — shows a device auth URL + code. Open the URL, enter the code,
+# authorize with a GitHub account that has an active Copilot subscription ($10/mo).
+npx copilot-api start --port 4141
+
+# Run in background (recommended):
+tmux new-session -d -s copilot 'npx copilot-api start --port 4141'
+```
+
+**OpenAI / Anthropic:** No proxy needed — your API key is already in `.env`.
+
+### 2. Start OpenClaw
+
+```bash
+openclaw gateway start
+openclaw status       # Verify everything is running
+```
+
+### 3. Start ClawSuite Console (if selected)
+
+```bash
+cd ~/clawsuite && HOST=0.0.0.0 PORT=3000 node server-entry.js
+
+# Run in background:
+tmux new-session -d -s console 'cd ~/clawsuite && HOST=0.0.0.0 PORT=3000 node server-entry.js'
+```
+
+Then open in your browser:
+- **Local:** `http://localhost:3000`
+- **Remote/VPS:** `http://YOUR-SERVER-IP:3000`
+
+### 4. Chat with Your Agent
+
+- **Discord:** Open the channel you configured and send a message
+- **ClawSuite Console:** Use the chat panel in the web dashboard
+- **Both:** Use either — they connect to the same agent
+
+## Memory System (Hybrid Plugin)
+
+Clawdboss includes a custom **memory-hybrid plugin** that gives your agent two-tier persistent memory:
+
+- **SQLite + FTS5** — Structured facts with full-text search. Instant, zero API cost. Stores entities, preferences, decisions with auto-expiry and confidence decay.
+- **LanceDB** — Semantic vector search for fuzzy/contextual recall. Uses OpenAI embeddings (`text-embedding-3-small`).
+
+Both backends are queried in parallel, results merged and deduplicated. The agent gets `memory_store`, `memory_recall`, `memory_forget`, `memory_checkpoint`, and `memory_prune` tools automatically.
+
+**Requires:** An OpenAI API key for embeddings (set `EMBEDDING_API_KEY` in your `.env`).
+
+**CLI commands:**
+```bash
+openclaw hybrid-mem stats           # Show memory statistics
+openclaw hybrid-mem search "query"  # Search across both backends
+openclaw hybrid-mem prune           # Remove expired memories
+```
+
 ## Requirements
 
 - Ubuntu 22.04+ (or any Linux with bash)
