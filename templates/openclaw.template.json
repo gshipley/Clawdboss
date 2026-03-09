@@ -54,10 +54,6 @@
   },
   "tools": {
     "web": {
-      "search": {
-        "enabled": true,
-        "apiKey": "${BRAVE_API_KEY}"
-      },
       "fetch": {
         "enabled": true
       }

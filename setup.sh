@@ -775,6 +775,7 @@ generate_config() {
   export CB_LLM_PROVIDER="$LLM_PROVIDER"
   export CB_OPENAI_SKILLS_KEY="${OPENAI_SKILLS_KEY:-}"
   export CB_ELEVENLABS_KEY="${ELEVENLABS_KEY:-}"
+  export CB_BRAVE_KEY="${BRAVE_KEY:-}"
   export CB_USE_DISCORD="$USE_DISCORD"
   export CB_USE_CONSOLE="$USE_CONSOLE"
 
@@ -810,6 +811,7 @@ use_console = os.environ.get('CB_USE_CONSOLE', 'false') == 'true'
 llm_provider = os.environ['CB_LLM_PROVIDER']
 openai_skills_key = os.environ.get('CB_OPENAI_SKILLS_KEY', '')
 elevenlabs_key = os.environ.get('CB_ELEVENLABS_KEY', '')
+brave_key = os.environ.get('CB_BRAVE_KEY', '')
 
 with open(os.path.join(templates_dir, "openclaw.template.json")) as f:
     config = json.load(f)
@@ -1024,6 +1026,10 @@ if openai_skills_key:
 if elevenlabs_key:
     config['skills']['entries']['sag'] = {"apiKey": "${ELEVENLABS_API_KEY}"}
 
+# Brave Search (only if key provided)
+if brave_key:
+    config['tools']['web']['search'] = {"enabled": True, "apiKey": "${BRAVE_API_KEY}"}
+
 print(json.dumps(config, indent=2))
 PYEOF
 
@@ -1033,7 +1039,7 @@ PYEOF
   # Clean up exported vars
   unset CB_TEMPLATES_DIR CB_WORKSPACE_DIR CB_OPENCLAW_DIR CB_DISCORD_GUILD CB_DISCORD_OWNER
   unset CB_DISCORD_MAIN_CHANNEL CB_DEPLOY_COMMS CB_DEPLOY_RESEARCH CB_DEPLOY_SECURITY
-  unset CB_LLM_PROVIDER CB_OPENAI_SKILLS_KEY CB_ELEVENLABS_KEY
+  unset CB_LLM_PROVIDER CB_OPENAI_SKILLS_KEY CB_ELEVENLABS_KEY CB_BRAVE_KEY
   unset CB_COMMS_NAME CB_DISCORD_COMMS_CHANNEL CB_RESEARCH_NAME CB_DISCORD_RESEARCH_CHANNEL
   unset CB_SECURITY_NAME CB_DISCORD_SECURITY_CHANNEL 2>/dev/null || true
 }
