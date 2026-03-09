@@ -935,13 +935,15 @@ if llm_provider == "openai":
             "baseUrl": "https://api.openai.com/v1",
             "apiKey": "${OPENAI_API_KEY}",
             "models": [
-                {"id": "gpt-4o", "name": "GPT-4o", "input": ["text", "image"], "contextWindow": 128000, "maxTokens": 16384},
-                {"id": "gpt-4o-mini", "name": "GPT-4o Mini", "input": ["text", "image"], "contextWindow": 128000, "maxTokens": 16384}
+                {"id": "gpt-4.1", "name": "GPT-4.1", "input": ["text", "image"], "contextWindow": 1047576, "maxTokens": 32768},
+                {"id": "gpt-4.1-mini", "name": "GPT-4.1 Mini", "input": ["text", "image"], "contextWindow": 1047576, "maxTokens": 32768},
+                {"id": "gpt-4.1-nano", "name": "GPT-4.1 Nano", "input": ["text", "image"], "contextWindow": 1047576, "maxTokens": 32768},
+                {"id": "gpt-4o", "name": "GPT-4o", "input": ["text", "image"], "contextWindow": 128000, "maxTokens": 16384}
             ]
         }
     }
-    config['agents']['defaults']['model']['primary'] = "openai/gpt-4o"
-    config['agents']['defaults']['heartbeat']['model'] = "openai/gpt-4o-mini"
+    config['agents']['defaults']['model']['primary'] = "openai/gpt-4.1"
+    config['agents']['defaults']['heartbeat']['model'] = "openai/gpt-4.1-mini"
 elif llm_provider == "anthropic":
     config['models']['providers'] = {
         "anthropic": {
@@ -999,7 +1001,7 @@ elif llm_provider == "kimi":
 elif llm_provider == "openai-codex-oauth":
     # No provider config needed — built-in pi-ai catalog handles it
     # OAuth login happens post-setup via openclaw models auth login
-    config['agents']['defaults']['model']['primary'] = "openai-codex/gpt-4o"
+    config['agents']['defaults']['model']['primary'] = "openai-codex/gpt-4.1"
 elif llm_provider == "gemini-cli-oauth":
     # OAuth login happens post-setup via openclaw models auth login
     config['agents']['defaults']['model']['primary'] = "google-gemini-cli/gemini-2.5-pro"
