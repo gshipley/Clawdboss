@@ -1890,10 +1890,18 @@ show_summary() {
   # Start OpenClaw
   echo "    $STEP. Start OpenClaw:"
   echo ""
-  echo "       openclaw gateway start"
-  echo ""
-  echo "       Or run in the background with tmux:"
-  echo "       tmux new-session -d -s openclaw 'openclaw gateway run'"
+  if [ "$(id -u)" = "0" ]; then
+    echo "       tmux new-session -d -s openclaw 'openclaw gateway run'"
+    echo ""
+    echo "       (Running as root — use tmux instead of 'gateway start')"
+    echo "       To attach: tmux attach -t openclaw"
+    echo "       To detach: Ctrl+B then D"
+  else
+    echo "       openclaw gateway start"
+    echo ""
+    echo "       Or run in the background with tmux:"
+    echo "       tmux new-session -d -s openclaw 'openclaw gateway run'"
+  fi
   echo ""
   STEP=$((STEP + 1))
 
