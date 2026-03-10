@@ -656,27 +656,48 @@ collect_keys() {
 
   echo ""
 
+  # --- Optional API Keys for Skills & Integrations ---
+  echo ""
+  echo -e "${BOLD}Optional API Keys (for skills & integrations):${NC}"
+  info "These are separate from your LLM provider. Press Enter to skip any."
+  echo ""
+
   # Brave Search
-  echo -e "${BOLD}Web Search (optional):${NC}"
-  ask "Brave Search API key (press Enter to skip)"
+  echo -e "${BOLD}  Brave Search${NC} — web search (free tier: 2k queries/mo)"
+  info "  Get a key at https://brave.com/search/api/"
+  ask "  Brave Search API key"
   read -rs BRAVE_KEY
   echo ""
 
   # OpenAI for skills/embeddings
   if [ "$LLM_PROVIDER" != "openai" ]; then
     echo ""
-    echo -e "${BOLD}OpenAI (for image gen / whisper / embeddings — optional):${NC}"
-    ask "OpenAI API key (press Enter to skip)"
+    echo -e "${BOLD}  OpenAI${NC} — image gen (DALL-E), whisper transcription, embeddings"
+    info "  Get a key at https://platform.openai.com/api-keys"
+    ask "  OpenAI API key"
     read -rs OPENAI_SKILLS_KEY
     echo ""
   else
     OPENAI_SKILLS_KEY="$OPENAI_DIRECT_KEY"
   fi
 
+  # Gemini for skills (nano-banana-pro image gen)
+  if [ "$LLM_PROVIDER" != "gemini" ]; then
+    echo ""
+    echo -e "${BOLD}  Google Gemini${NC} — image gen (nano-banana-pro) & other Google AI skills"
+    info "  Get a FREE key at https://aistudio.google.com/apikey"
+    ask "  Gemini API key"
+    read -rs GEMINI_SKILLS_KEY
+    echo ""
+  else
+    GEMINI_SKILLS_KEY="$GEMINI_KEY"
+  fi
+
   # ElevenLabs
   echo ""
-  echo -e "${BOLD}ElevenLabs TTS (optional):${NC}"
-  ask "ElevenLabs API key (press Enter to skip)"
+  echo -e "${BOLD}  ElevenLabs${NC} — text-to-speech & AI music"
+  info "  Get a key at https://elevenlabs.io"
+  ask "  ElevenLabs API key"
   read -rs ELEVENLABS_KEY
   echo ""
 
@@ -738,6 +759,9 @@ BRAVE_API_KEY=${BRAVE_KEY:-}
 OPENAI_API_KEY=${OPENAI_SKILLS_KEY:-}
 ELEVENLABS_API_KEY=${ELEVENLABS_KEY:-}
 
+# Gemini (skills / nano-banana-pro)
+GEMINI_API_KEY=${GEMINI_SKILLS_KEY:-${GEMINI_KEY:-}}
+
 # Embeddings (memory-hybrid)
 EMBEDDING_API_KEY=${OPENAI_SKILLS_KEY:-}
 
@@ -776,6 +800,7 @@ generate_config() {
   export CB_OPENAI_SKILLS_KEY="${OPENAI_SKILLS_KEY:-}"
   export CB_ELEVENLABS_KEY="${ELEVENLABS_KEY:-}"
   export CB_BRAVE_KEY="${BRAVE_KEY:-}"
+  export CB_GEMINI_SKILLS_KEY="${GEMINI_SKILLS_KEY:-${GEMINI_KEY:-}}"
   export CB_USE_DISCORD="$USE_DISCORD"
   export CB_USE_CONSOLE="$USE_CONSOLE"
 
@@ -812,6 +837,7 @@ llm_provider = os.environ['CB_LLM_PROVIDER']
 openai_skills_key = os.environ.get('CB_OPENAI_SKILLS_KEY', '')
 elevenlabs_key = os.environ.get('CB_ELEVENLABS_KEY', '')
 brave_key = os.environ.get('CB_BRAVE_KEY', '')
+gemini_skills_key = os.environ.get('CB_GEMINI_SKILLS_KEY', '')
 
 with open(os.path.join(templates_dir, "openclaw.template.json")) as f:
     config = json.load(f)
@@ -1026,6 +1052,18 @@ if openai_skills_key:
 if elevenlabs_key:
     config['skills']['entries']['sag'] = {"apiKey": "${ELEVENLABS_API_KEY}"}
 
+# Gemini-powered skills (only if key provided)
+if gemini_skills_key:
+    config['skills']['entries']['nano-banana-pro'] = {"apiKey": "${GEMINI_API_KEY}"}
+    # Add gemini provider for skills if not already the LLM provider
+    if llm_provider != "gemini" and "gemini" not in config.get('models', {}).get('providers', {}):
+        config.setdefault('models', {}).setdefault('providers', {})['gemini'] = {
+            "baseUrl": "https://generativelanguage.googleapis.com",
+            "apiKey": "${GEMINI_API_KEY}",
+            "api": "google-generative-ai",
+            "models": []
+        }
+
 # Brave Search (only if key provided)
 if brave_key:
     config['tools']['web']['search'] = {"enabled": True, "apiKey": "${BRAVE_API_KEY}"}
@@ -1039,7 +1077,7 @@ PYEOF
   # Clean up exported vars
   unset CB_TEMPLATES_DIR CB_WORKSPACE_DIR CB_OPENCLAW_DIR CB_DISCORD_GUILD CB_DISCORD_OWNER
   unset CB_DISCORD_MAIN_CHANNEL CB_DEPLOY_COMMS CB_DEPLOY_RESEARCH CB_DEPLOY_SECURITY
-  unset CB_LLM_PROVIDER CB_OPENAI_SKILLS_KEY CB_ELEVENLABS_KEY CB_BRAVE_KEY
+  unset CB_LLM_PROVIDER CB_OPENAI_SKILLS_KEY CB_ELEVENLABS_KEY CB_BRAVE_KEY CB_GEMINI_SKILLS_KEY
   unset CB_COMMS_NAME CB_DISCORD_COMMS_CHANNEL CB_RESEARCH_NAME CB_DISCORD_RESEARCH_CHANNEL
   unset CB_SECURITY_NAME CB_DISCORD_SECURITY_CHANNEL 2>/dev/null || true
 }
@@ -1896,19 +1934,29 @@ show_summary() {
   fi
 
   # Start OpenClaw
-  echo "    $STEP. Start OpenClaw:"
+  echo "    $STEP. OpenClaw Gateway:"
   echo ""
-  if [ "$(id -u)" = "0" ]; then
-    echo "       tmux new-session -d -s openclaw 'openclaw gateway run'"
-    echo ""
-    echo "       (Running as root — use tmux instead of 'gateway start')"
+  if tmux has-session -t openclaw 2>/dev/null; then
+    echo "       ✅ Already running in tmux session 'openclaw'"
     echo "       To attach: tmux attach -t openclaw"
     echo "       To detach: Ctrl+B then D"
+  elif systemctl is-active --quiet openclaw 2>/dev/null; then
+    echo "       ✅ Already running via systemd"
+    echo "       Check: systemctl status openclaw"
+    echo "       Logs:  journalctl -u openclaw -f"
   else
-    echo "       openclaw gateway start"
-    echo ""
-    echo "       Or run in the background with tmux:"
-    echo "       tmux new-session -d -s openclaw 'openclaw gateway run'"
+    if [ "$(id -u)" = "0" ]; then
+      echo "       tmux new-session -d -s openclaw 'openclaw gateway run'"
+      echo ""
+      echo "       (Running as root — use tmux instead of 'gateway start')"
+      echo "       To attach: tmux attach -t openclaw"
+      echo "       To detach: Ctrl+B then D"
+    else
+      echo "       openclaw gateway start"
+      echo ""
+      echo "       Or run in the background with tmux:"
+      echo "       tmux new-session -d -s openclaw 'openclaw gateway run'"
+    fi
   fi
   echo ""
   STEP=$((STEP + 1))
@@ -2425,10 +2473,9 @@ CADDYEOF
     echo ""
   fi
 
-  # ---- Server Hardening ----
-  harden_server
-
   # ---- Auto-start Gateway ----
+  # Must run BEFORE harden_server so the gateway is running
+  # when UFW is enabled (gateway binds to loopback anyway)
   echo ""
   info "Starting OpenClaw gateway..."
 
@@ -2440,7 +2487,22 @@ CADDYEOF
       tmux new-session -d -s openclaw "openclaw gateway run"
       sleep 2
       if tmux has-session -t openclaw 2>/dev/null; then
-        success "Gateway started in tmux session 'openclaw'"
+        # Give the gateway a moment to fully bind
+        local GATEWAY_READY=false
+        for i in 1 2 3 4 5; do
+          if curl -sf http://127.0.0.1:18789/ >/dev/null 2>&1 || \
+             ss -tlnp 2>/dev/null | grep -q ':18789 ' || \
+             netstat -tlnp 2>/dev/null | grep -q ':18789 '; then
+            GATEWAY_READY=true
+            break
+          fi
+          sleep 2
+        done
+        if [ "$GATEWAY_READY" = true ]; then
+          success "Gateway started in tmux session 'openclaw'"
+        else
+          success "Gateway started in tmux session 'openclaw' (may still be initializing)"
+        fi
         info "Attach with: tmux attach -t openclaw"
         info "Detach with: Ctrl+B then D"
       else
@@ -2523,6 +2585,9 @@ SVCEOF
       success "Gateway start attempted in background"
     fi
   fi
+
+  # ---- Server Hardening ----
+  harden_server
 
   show_summary
 }

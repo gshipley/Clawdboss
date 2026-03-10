@@ -69,6 +69,8 @@ class FactsDB {
 
     // Enable WAL mode for better concurrent read performance
     this.db.pragma("journal_mode = WAL");
+    // Allow waiting up to 5s if another process holds the lock
+    this.db.pragma("busy_timeout = 5000");
 
     // Create main table
     this.db.exec(`
