@@ -347,23 +347,104 @@ find_versioned_command() {
   [ -n "$best_path" ] && echo "$best_path"
 }
 
+ensure_login_shell_local_bin_path() {
+  local profile_file="/etc/profile.d/00-clawdboss-local-bin.sh"
+  local tmp
+
+  tmp=$(mktemp) || return 1
+  cat >"$tmp" <<'EOF'
+# Added by Clawdboss setup so system-wide CLI shims in /usr/local/bin are
+# available in login shells on distros that do not include it by default.
+case ":$PATH:" in
+  *:/usr/local/bin:*) ;;
+  *) export PATH="/usr/local/bin:$PATH" ;;
+esac
+EOF
+
+  if [ -f "$profile_file" ] && cmp -s "$tmp" "$profile_file"; then
+    rm -f "$tmp"
+    return 0
+  fi
+
+  run_privileged install -D -m 644 "$tmp" "$profile_file" || {
+    rm -f "$tmp"
+    return 1
+  }
+
+  rm -f "$tmp"
+}
+
+ensure_sudo_local_bin_secure_path() {
+  command -v sudo &>/dev/null || return 0
+  [ -d /etc/sudoers.d ] || return 0
+  command -v visudo &>/dev/null || return 0
+
+  local current_path
+  local secure_path
+  local sudoers_file="/etc/sudoers.d/99-clawdboss-local-bin-path"
+  local tmp
+
+  current_path="$(sudo -V 2>/dev/null | awk -F': ' '/Value to override user.*path/ {print $2; exit}')"
+  current_path="${current_path#"${current_path%%[![:space:]]*}"}"
+  secure_path="${current_path:-/usr/sbin:/usr/bin:/sbin:/bin}"
+
+  case ":$secure_path:" in
+    *:/usr/local/bin:*)
+      return 0
+      ;;
+  esac
+
+  secure_path="/usr/local/bin:${secure_path}"
+
+  tmp=$(mktemp) || return 1
+  printf 'Defaults secure_path="%s"\n' "$secure_path" >"$tmp"
+
+  if ! run_privileged visudo -cf "$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp"
+    return 1
+  fi
+
+  if [ -f "$sudoers_file" ] && run_privileged cmp -s "$tmp" "$sudoers_file"; then
+    rm -f "$tmp"
+    return 0
+  fi
+
+  run_privileged install -D -m 440 "$tmp" "$sudoers_file" || {
+    rm -f "$tmp"
+    return 1
+  }
+
+  rm -f "$tmp"
+}
+
 ensure_runtime_command_aliases() {
   export PATH="/usr/local/bin:$PATH"
 
-  local base resolved
+  local base alias_path resolved
   for base in node npm npx; do
-    if ! command -v "$base" &>/dev/null; then
-      resolved="$(find_versioned_command "$base")"
-      if [ -n "$resolved" ]; then
-        run_privileged mkdir -p /usr/local/bin
-        run_privileged ln -sf "$resolved" "/usr/local/bin/$base"
-      fi
+    resolved="$(find_versioned_command "$base")"
+    alias_path="/usr/local/bin/$base"
+    if [ -n "$resolved" ]; then
+      run_privileged mkdir -p /usr/local/bin
+      run_privileged ln -sf "$resolved" "$alias_path"
     fi
   done
 }
 
 runtime_command_path() {
   local base="$1"
+  if [ -x "/usr/local/bin/$base" ]; then
+    echo "/usr/local/bin/$base"
+    return 0
+  fi
+  if [ -x "/usr/bin/$base" ]; then
+    echo "/usr/bin/$base"
+    return 0
+  fi
+  if [ -x "/bin/$base" ]; then
+    echo "/bin/$base"
+    return 0
+  fi
   command -v "$base" 2>/dev/null || find_versioned_command "$base"
 }
 
@@ -435,7 +516,7 @@ ensure_openclaw_available() {
   local openclaw_mjs
 
   openclaw_bin="$(runtime_command_path openclaw)"
-  if [ -n "$openclaw_bin" ]; then
+  if [ -n "$openclaw_bin" ] && "$openclaw_bin" --version >/dev/null 2>&1; then
     return 0
   fi
 
@@ -868,6 +949,8 @@ detect_platform
 preflight() {
   info "Running pre-flight checks..."
   ensure_runtime_command_aliases
+  ensure_login_shell_local_bin_path || warn "Could not install /etc/profile.d path fix for /usr/local/bin"
+  ensure_sudo_local_bin_secure_path || warn "Could not update sudo secure_path for /usr/local/bin"
 
   # Auto-install Node.js 22 if not found or version too old
   local need_node=false
@@ -2915,6 +2998,12 @@ show_summary() {
   echo ""
 
   local STEP=1
+  local NODE_CMD
+  local OPENCLAW_CMD
+  NODE_CMD="$(runtime_command_path node)"
+  OPENCLAW_CMD="$(runtime_command_path openclaw)"
+  [ -n "$NODE_CMD" ] || NODE_CMD="node"
+  [ -n "$OPENCLAW_CMD" ] || OPENCLAW_CMD="openclaw"
 
   # Provider auth step (if needed)
   if [ "$LLM_PROVIDER" = "copilot" ]; then
@@ -2961,16 +3050,16 @@ show_summary() {
     echo "       Logs:  journalctl -u openclaw -f"
   else
     if [ "$(id -u)" = "0" ]; then
-      echo "       tmux new-session -d -s openclaw 'openclaw gateway run'"
+      echo "       tmux new-session -d -s openclaw '$OPENCLAW_CMD gateway run'"
       echo ""
       echo "       (Running as root — use tmux instead of 'gateway start')"
       echo "       To attach: tmux attach -t openclaw"
       echo "       To detach: Ctrl+B then D"
     else
-      echo "       openclaw gateway start"
+      echo "       $OPENCLAW_CMD gateway start"
       echo ""
       echo "       Or run in the background with tmux:"
-      echo "       tmux new-session -d -s openclaw 'openclaw gateway run'"
+      echo "       tmux new-session -d -s openclaw '$OPENCLAW_CMD gateway run'"
     fi
   fi
   echo ""
@@ -2987,26 +3076,26 @@ show_summary() {
     echo "    $STEP. Start ClawSuite Console (web dashboard):"
     echo ""
     if [ "${CONSOLE_SECURITY:-1}" = "2" ] && [ -n "${CONSOLE_DOMAIN:-}" ]; then
-      echo "       cd ~/clawsuite && HOST=127.0.0.1 PORT=3000 node server-entry.js"
+      echo "       cd ~/clawsuite && HOST=127.0.0.1 PORT=3000 $NODE_CMD server-entry.js"
       echo ""
       echo "       Or in the background:"
-      echo "       tmux new-session -d -s console 'cd ~/clawsuite && HOST=127.0.0.1 PORT=3000 node server-entry.js'"
+      echo "       tmux new-session -d -s console 'cd ~/clawsuite && HOST=127.0.0.1 PORT=3000 $NODE_CMD server-entry.js'"
       echo ""
       echo "       Access: https://$CONSOLE_DOMAIN"
       echo "       Auth:   $CONSOLE_AUTH_USER / [your password]"
       echo "       SSL:    Managed by Caddy (auto-renewed)"
     elif [ "${CONSOLE_SECURITY:-1}" = "3" ]; then
-      echo "       cd ~/clawsuite && HOST=0.0.0.0 PORT=3000 node server-entry.js"
+      echo "       cd ~/clawsuite && HOST=0.0.0.0 PORT=3000 $NODE_CMD server-entry.js"
       echo ""
       echo "       Or in the background:"
-      echo "       tmux new-session -d -s console 'cd ~/clawsuite && HOST=0.0.0.0 PORT=3000 node server-entry.js'"
+      echo "       tmux new-session -d -s console 'cd ~/clawsuite && HOST=0.0.0.0 PORT=3000 $NODE_CMD server-entry.js'"
       echo ""
       echo "       Access: http://YOUR-SERVER-IP:3000"
     else
-      echo "       cd ~/clawsuite && HOST=127.0.0.1 PORT=3000 node server-entry.js"
+      echo "       cd ~/clawsuite && HOST=127.0.0.1 PORT=3000 $NODE_CMD server-entry.js"
       echo ""
       echo "       Or in the background:"
-      echo "       tmux new-session -d -s console 'cd ~/clawsuite && HOST=127.0.0.1 PORT=3000 node server-entry.js'"
+      echo "       tmux new-session -d -s console 'cd ~/clawsuite && HOST=127.0.0.1 PORT=3000 $NODE_CMD server-entry.js'"
       echo ""
       echo "       Access via SSH tunnel:"
       echo "         ssh -L 3000:localhost:3000 user@your-server-ip"
@@ -3319,14 +3408,17 @@ CADDYEOF
       esac
 
       success "ClawSuite Console ready at $CONSOLE_DIR"
+      local CONSOLE_NODE_BIN
+      CONSOLE_NODE_BIN="$(runtime_command_path node)"
+      [ -n "$CONSOLE_NODE_BIN" ] || CONSOLE_NODE_BIN="node"
       if [ "$CONSOLE_HOST" = "127.0.0.1" ] && [ "$CONSOLE_SECURITY" != "2" ]; then
-        info "Start with: cd $CONSOLE_DIR && HOST=127.0.0.1 PORT=3000 node server-entry.js"
+        info "Start with: cd $CONSOLE_DIR && HOST=127.0.0.1 PORT=3000 $CONSOLE_NODE_BIN server-entry.js"
         info "Access via SSH tunnel: ssh -L 3000:localhost:3000 user@server-ip"
       elif [ "${CONSOLE_DOMAIN:-}" ]; then
-        info "Start with: cd $CONSOLE_DIR && HOST=127.0.0.1 PORT=3000 node server-entry.js"
+        info "Start with: cd $CONSOLE_DIR && HOST=127.0.0.1 PORT=3000 $CONSOLE_NODE_BIN server-entry.js"
         info "Access at: https://$CONSOLE_DOMAIN"
       else
-        info "Start with: cd $CONSOLE_DIR && HOST=$CONSOLE_HOST PORT=3000 node server-entry.js"
+        info "Start with: cd $CONSOLE_DIR && HOST=$CONSOLE_HOST PORT=3000 $CONSOLE_NODE_BIN server-entry.js"
       fi
     fi
   fi
@@ -3593,13 +3685,16 @@ JAIL_EOF
   # when UFW is enabled (gateway binds to loopback anyway)
   echo ""
   info "Starting OpenClaw gateway..."
+  local OPENCLAW_GATEWAY_BIN
+  OPENCLAW_GATEWAY_BIN="$(runtime_command_path openclaw)"
+  [ -n "$OPENCLAW_GATEWAY_BIN" ] || OPENCLAW_GATEWAY_BIN="/usr/local/bin/openclaw"
 
   if [ "$(id -u)" = "0" ]; then
     # Running as root — use tmux (systemd services shouldn't run as root)
     if command -v tmux &>/dev/null; then
       # Kill any existing session first
       tmux kill-session -t openclaw 2>/dev/null || true
-      tmux new-session -d -s openclaw "openclaw gateway run"
+      tmux new-session -d -s openclaw "$OPENCLAW_GATEWAY_BIN gateway run"
       sleep 2
       if tmux has-session -t openclaw 2>/dev/null; then
         # Give the gateway a moment to fully bind
@@ -3624,20 +3719,27 @@ JAIL_EOF
         warn "Gateway may not have started. Check: tmux attach -t openclaw"
       fi
     else
-      warn "tmux not found — start the gateway manually: openclaw gateway run"
+      warn "tmux not found — start the gateway manually: $OPENCLAW_GATEWAY_BIN gateway run"
     fi
   else
     # Non-root — try systemd service, fall back to tmux
     if [ -d /etc/systemd/system ] && command -v systemctl &>/dev/null; then
-      # Create systemd service if it doesn't exist
-      if [ ! -f /etc/systemd/system/openclaw.service ]; then
-        info "Setting up OpenClaw as a systemd service..."
-        local OPENCLAW_BIN
-        OPENCLAW_BIN="$(command -v openclaw 2>/dev/null || echo "/usr/local/bin/openclaw")"
-        local CURRENT_USER
-        CURRENT_USER="$(whoami)"
+      local OPENCLAW_SERVICE_FILE="/etc/systemd/system/openclaw.service"
+      local OPENCLAW_SERVICE_PATH="/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+      local CURRENT_USER
+      CURRENT_USER="$(whoami)"
+      local WRITE_OPENCLAW_SERVICE=true
 
-        sudo tee /etc/systemd/system/openclaw.service > /dev/null << SVCEOF
+      if [ -f "$OPENCLAW_SERVICE_FILE" ] \
+        && grep -Fq "ExecStart=$OPENCLAW_GATEWAY_BIN gateway run" "$OPENCLAW_SERVICE_FILE" \
+        && grep -Fq "Environment=PATH=$OPENCLAW_SERVICE_PATH" "$OPENCLAW_SERVICE_FILE"; then
+        WRITE_OPENCLAW_SERVICE=false
+      fi
+
+      if [ "$WRITE_OPENCLAW_SERVICE" = true ]; then
+        info "Setting up OpenClaw as a systemd service..."
+
+        sudo tee "$OPENCLAW_SERVICE_FILE" > /dev/null << SVCEOF
 [Unit]
 Description=OpenClaw AI Agent Gateway
 After=network-online.target
@@ -3647,11 +3749,11 @@ Wants=network-online.target
 Type=simple
 User=$CURRENT_USER
 WorkingDirectory=$HOME
-ExecStart=$OPENCLAW_BIN gateway run
+ExecStart=$OPENCLAW_GATEWAY_BIN gateway run
 Restart=on-failure
 RestartSec=5
 Environment=HOME=$HOME
-Environment=PATH=$HOME/.local/bin:$HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=$OPENCLAW_SERVICE_PATH
 
 # M-2: Systemd sandboxing directives
 ProtectSystem=strict
@@ -3670,7 +3772,7 @@ WantedBy=multi-user.target
 SVCEOF
         sudo systemctl daemon-reload 2>/dev/null
         sudo systemctl enable openclaw 2>/dev/null
-        success "Systemd service created and enabled"
+        success "Systemd service ready and enabled"
       fi
 
       sudo systemctl start openclaw 2>/dev/null
@@ -3683,31 +3785,31 @@ SVCEOF
         warn "Systemd start may have failed. Falling back to tmux..."
         if command -v tmux &>/dev/null; then
           tmux kill-session -t openclaw 2>/dev/null || true
-          tmux new-session -d -s openclaw "openclaw gateway run"
+          tmux new-session -d -s openclaw "$OPENCLAW_GATEWAY_BIN gateway run"
           sleep 2
           if tmux has-session -t openclaw 2>/dev/null; then
             success "Gateway started in tmux session 'openclaw'"
           else
-            warn "Could not start gateway. Run manually: openclaw gateway start"
+            warn "Could not start gateway. Run manually: $OPENCLAW_GATEWAY_BIN gateway start"
           fi
         else
-          openclaw gateway start 2>/dev/null &
+          "$OPENCLAW_GATEWAY_BIN" gateway start 2>/dev/null &
           sleep 2
           success "Gateway start attempted in background"
         fi
       fi
     elif command -v tmux &>/dev/null; then
       tmux kill-session -t openclaw 2>/dev/null || true
-      tmux new-session -d -s openclaw "openclaw gateway run"
+      tmux new-session -d -s openclaw "$OPENCLAW_GATEWAY_BIN gateway run"
       sleep 2
       if tmux has-session -t openclaw 2>/dev/null; then
         success "Gateway started in tmux session 'openclaw'"
         info "Attach with: tmux attach -t openclaw"
       else
-        warn "Could not start gateway. Run manually: openclaw gateway start"
+        warn "Could not start gateway. Run manually: $OPENCLAW_GATEWAY_BIN gateway start"
       fi
     else
-      openclaw gateway start 2>/dev/null &
+      "$OPENCLAW_GATEWAY_BIN" gateway start 2>/dev/null &
       sleep 2
       success "Gateway start attempted in background"
     fi
@@ -4447,6 +4549,9 @@ harden_server() {
   echo ""
 
   if [ "$(id -u)" = "0" ]; then
+    local ROOT_OPENCLAW_BIN
+    ROOT_OPENCLAW_BIN="$(runtime_command_path openclaw)"
+    [ -n "$ROOT_OPENCLAW_BIN" ] || ROOT_OPENCLAW_BIN="openclaw"
     warn "You're running as root. Consider creating a dedicated service user."
     info "Running as root means any agent compromise = full system access."
     echo ""
@@ -4455,7 +4560,7 @@ harden_server() {
     info "  mkdir -p /home/openclaw/.openclaw"
     info "  cp -r ~/.openclaw/* /home/openclaw/.openclaw/"
     info "  chown -R openclaw: /home/openclaw"
-    info "  Then run OpenClaw as that user: su - openclaw -c 'openclaw gateway start'"
+    info "  Then run OpenClaw as that user: su - openclaw -c '$ROOT_OPENCLAW_BIN gateway start'"
   else
     success "Running as non-root user ($(whoami)) — good practice"
   fi
