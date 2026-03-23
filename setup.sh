@@ -331,7 +331,7 @@ manual_pkg_install_hint() {
 show_node_manual_install_hint() {
   case "$PKG_MANAGER" in
     dnf)
-      echo "  sudo dnf install -y nodejs"
+      echo "  sudo dnf install -y nodejs24 || sudo dnf install -y nodejs"
       ;;
     pacman)
       echo "  sudo pacman -S nodejs npm"
@@ -348,7 +348,7 @@ show_node_manual_install_hint() {
 install_nodejs_runtime() {
   case "$PKG_MANAGER" in
     dnf)
-      pkg_install --quiet nodejs
+      pkg_install --quiet nodejs24 || pkg_install --quiet nodejs
       ;;
     pacman)
       pkg_install --quiet nodejs npm || pkg_install --quiet nodejs
@@ -612,7 +612,7 @@ preflight() {
   fi
 
   if [ "$need_node" = true ]; then
-    info "Installing Node.js 22..."
+    info "Installing Node.js 22+..."
     if install_nodejs_runtime; then
       if command -v node &>/dev/null; then
         node_version_major=$(node -v | sed 's/v//' | cut -d. -f1)
@@ -624,7 +624,7 @@ preflight() {
       fi
       success "Node.js $(node -v) installed"
     else
-      error "Could not auto-install Node.js. Install Node.js 22 manually:"
+      error "Could not auto-install Node.js. Install Node.js 22+ manually:"
       show_node_manual_install_hint
       exit 1
     fi
@@ -658,7 +658,7 @@ preflight() {
 
   if ! command -v openclaw &>/dev/null; then
     warn "OpenClaw not found. Installing..."
-    npm install -g --ignore-scripts openclaw@latest
+    npm install -g openclaw@latest
   fi
   success "OpenClaw $(openclaw --version 2>/dev/null | head -1)"
 
@@ -2784,18 +2784,19 @@ CONSOLEEOF
                 local CADDY_VER="${CADDY_TAG#v}"
                 local CADDY_URL="https://github.com/caddyserver/caddy/releases/download/${CADDY_TAG}/caddy_${CADDY_VER}_linux_${CADDY_ARCH}.tar.gz"
                 download_verified "$CADDY_URL" "/tmp/caddy.tar.gz" "SKIP"
-                if [ -f /tmp/caddy.tar.gz ]; then
-                  tar xzf /tmp/caddy.tar.gz -C /tmp caddy 2>/dev/null
-                  if [ -f /tmp/caddy ]; then
-                    mv /tmp/caddy /usr/local/bin/caddy && chmod +x /usr/local/bin/caddy
-                    rm -f /tmp/caddy.tar.gz
+	                if [ -f /tmp/caddy.tar.gz ]; then
+	                  tar xzf /tmp/caddy.tar.gz -C /tmp caddy 2>/dev/null
+	                  if [ -f /tmp/caddy ]; then
+	                    run_privileged mv /tmp/caddy /usr/local/bin/caddy \
+	                      && run_privileged chmod +x /usr/local/bin/caddy
+	                    rm -f /tmp/caddy.tar.gz
 
-                    # Create Caddy config dir if it doesn't exist
-                    mkdir -p /etc/caddy
+	                    # Create Caddy config dir if it doesn't exist
+	                    run_privileged mkdir -p /etc/caddy
 
-                    # Set up Caddy as a systemd service
-                    if [ -d /etc/systemd/system ] && [ ! -f /etc/systemd/system/caddy.service ]; then
-                      cat > /etc/systemd/system/caddy.service << 'CADDYSVC'
+	                    # Set up Caddy as a systemd service
+	                    if [ -d /etc/systemd/system ] && [ ! -f /etc/systemd/system/caddy.service ]; then
+	                      run_privileged tee /etc/systemd/system/caddy.service > /dev/null << 'CADDYSVC'
 [Unit]
 Description=Caddy
 After=network.target network-online.target
@@ -2815,8 +2816,8 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 [Install]
 WantedBy=multi-user.target
 CADDYSVC
-                      systemctl daemon-reload 2>/dev/null
-                    fi
+	                      run_privileged systemctl daemon-reload 2>/dev/null
+	                    fi
 
                     success "Caddy ${CADDY_VER} installed from GitHub release"
                     CADDY_INSTALLED=true
@@ -2872,9 +2873,9 @@ CADDYSVC
             # M-1: Hash the password for Caddy (pipe via stdin instead of --plaintext flag)
             CONSOLE_AUTH_HASH=$(printf '%s' "$CONSOLE_AUTH_PASS" | caddy hash-password 2>/dev/null)
 
-            if [ -n "$CONSOLE_AUTH_HASH" ] && [ -n "$CONSOLE_DOMAIN" ]; then
-              # Write Caddyfile
-              cat > /etc/caddy/Caddyfile << CADDYEOF
+	            if [ -n "$CONSOLE_AUTH_HASH" ] && [ -n "$CONSOLE_DOMAIN" ]; then
+	              # Write Caddyfile
+	              run_privileged tee /etc/caddy/Caddyfile > /dev/null << CADDYEOF
 ${CONSOLE_DOMAIN} {
     basicauth {
         ${CONSOLE_AUTH_USER} ${CONSOLE_AUTH_HASH}
@@ -2883,9 +2884,9 @@ ${CONSOLE_DOMAIN} {
 }
 CADDYEOF
 
-              # Restart Caddy
-              systemctl restart caddy 2>/dev/null \
-                || caddy start --config /etc/caddy/Caddyfile 2>/dev/null
+	              # Restart Caddy
+	              run_privileged systemctl restart caddy 2>/dev/null \
+	                || run_privileged caddy start --config /etc/caddy/Caddyfile 2>/dev/null
 
               success "Caddy configured: https://$CONSOLE_DOMAIN → ClawSuite Console"
               info "Make sure your DNS A record points $CONSOLE_DOMAIN to this server's IP"
@@ -4004,16 +4005,16 @@ harden_server() {
       info "Changing to 'prohibit-password' allows key-based root login only."
       ask "Harden SSH root login? [Y/n]"
       read -r HARDEN_SSH
-      HARDEN_SSH="${HARDEN_SSH:-Y}"
-      if [[ "$HARDEN_SSH" =~ ^[Yy] ]]; then
-        # Backup sshd_config
-        cp "$SSHD_CONFIG" "${SSHD_CONFIG}.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null
-        # Replace PermitRootLogin yes with prohibit-password
-        sed -i 's/^\s*PermitRootLogin\s\+yes/PermitRootLogin prohibit-password/' "$SSHD_CONFIG"
-        # Restart SSH
-        if systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null; then
-          success "PermitRootLogin set to 'prohibit-password' — SSH restarted"
-          CHANGES_MADE=true
+	      HARDEN_SSH="${HARDEN_SSH:-Y}"
+	      if [[ "$HARDEN_SSH" =~ ^[Yy] ]]; then
+	        # Backup sshd_config
+	        run_privileged cp "$SSHD_CONFIG" "${SSHD_CONFIG}.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null
+	        # Replace PermitRootLogin yes with prohibit-password
+	        run_privileged sed -i 's/^\s*PermitRootLogin\s\+yes/PermitRootLogin prohibit-password/' "$SSHD_CONFIG"
+	        # Restart SSH
+	        if run_privileged systemctl restart sshd 2>/dev/null || run_privileged systemctl restart ssh 2>/dev/null; then
+	          success "PermitRootLogin set to 'prohibit-password' — SSH restarted"
+	          CHANGES_MADE=true
         else
           warn "Could not restart SSH. Run manually: systemctl restart sshd"
         fi
