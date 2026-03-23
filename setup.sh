@@ -367,6 +367,12 @@ runtime_command_path() {
   command -v "$base" 2>/dev/null || find_versioned_command "$base"
 }
 
+shell_join_command() {
+  local rendered=""
+  printf -v rendered '%q ' "$@"
+  echo "${rendered% }"
+}
+
 npm_global_install() {
   local npm_bin
   local node_bin
@@ -560,7 +566,7 @@ clawhub_install_skill() {
   return 1
 }
 
-ensure_playwright_mcp_available() {
+playwright_mcp_command() {
   local playwright_mcp_bin
   local node_bin
   local npm_root
@@ -568,7 +574,7 @@ ensure_playwright_mcp_available() {
 
   playwright_mcp_bin="$(command -v playwright-mcp 2>/dev/null || true)"
   if [ -n "$playwright_mcp_bin" ] && "$playwright_mcp_bin" --help >/dev/null 2>&1; then
-    echo "$playwright_mcp_bin"
+    shell_join_command "$playwright_mcp_bin"
     return 0
   fi
 
@@ -576,7 +582,7 @@ ensure_playwright_mcp_available() {
 
   playwright_mcp_bin="$(command -v playwright-mcp 2>/dev/null || true)"
   if [ -n "$playwright_mcp_bin" ] && "$playwright_mcp_bin" --help >/dev/null 2>&1; then
-    echo "$playwright_mcp_bin"
+    shell_join_command "$playwright_mcp_bin"
     return 0
   fi
 
@@ -585,20 +591,7 @@ ensure_playwright_mcp_available() {
   cli_js="$npm_root/@playwright/mcp/cli.js"
 
   if [ -n "$node_bin" ] && [ -f "$cli_js" ]; then
-    run_privileged tee /usr/local/bin/playwright-mcp > /dev/null <<EOF
-#!/usr/bin/env bash
-exec "$node_bin" "$cli_js" "\$@"
-EOF
-    run_privileged chmod 755 /usr/local/bin/playwright-mcp || return 1
-    if command -v restorecon &>/dev/null; then
-      run_privileged restorecon -v /usr/local/bin/playwright-mcp "$cli_js" >/dev/null 2>&1 || true
-    fi
-  fi
-
-  hash -r 2>/dev/null || true
-  playwright_mcp_bin="$(command -v playwright-mcp 2>/dev/null || true)"
-  if [ -n "$playwright_mcp_bin" ] && "$playwright_mcp_bin" --help >/dev/null 2>&1; then
-    echo "$playwright_mcp_bin"
+    shell_join_command "$node_bin" "$cli_js"
     return 0
   fi
 
@@ -2701,11 +2694,11 @@ install_playwright() {
   if clawhub_install_skill playwright-mcp; then
     success "Playwright MCP skill installed"
   else
-    local PLAYWRIGHT_MCP_BIN
+    local PLAYWRIGHT_MCP_CMD
     local PLAYWRIGHT_CMD
-    PLAYWRIGHT_MCP_BIN="$(ensure_playwright_mcp_available 2>/dev/null || true)"
-    if [ -n "$PLAYWRIGHT_MCP_BIN" ]; then
-      PLAYWRIGHT_CMD="$PLAYWRIGHT_MCP_BIN --headless"
+    PLAYWRIGHT_MCP_CMD="$(playwright_mcp_command 2>/dev/null || true)"
+    if [ -n "$PLAYWRIGHT_MCP_CMD" ]; then
+      PLAYWRIGHT_CMD="$PLAYWRIGHT_MCP_CMD --headless"
       if command -v chromium &>/dev/null; then
         PLAYWRIGHT_CMD="$PLAYWRIGHT_CMD --executable-path $(command -v chromium)"
       elif command -v chromium-browser &>/dev/null; then
