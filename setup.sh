@@ -348,18 +348,22 @@ find_versioned_command() {
 }
 
 ensure_runtime_command_aliases() {
-  export PATH="$HOME/.local/bin:$PATH"
-  mkdir -p "$HOME/.local/bin"
+  export PATH="/usr/local/bin:$PATH"
 
   local base resolved
   for base in node npm npx; do
     if ! command -v "$base" &>/dev/null; then
       resolved="$(find_versioned_command "$base")"
       if [ -n "$resolved" ]; then
-        ln -sf "$resolved" "$HOME/.local/bin/$base"
+        run_privileged mkdir -p /usr/local/bin
+        run_privileged ln -sf "$resolved" "/usr/local/bin/$base"
       fi
     fi
   done
+}
+
+npm_global_install() {
+  run_privileged npm install -g "$@"
 }
 
 show_node_manual_install_hint() {
@@ -694,7 +698,7 @@ preflight() {
 
   if ! command -v openclaw &>/dev/null; then
     warn "OpenClaw not found. Installing..."
-    npm install -g openclaw@latest
+    npm_global_install openclaw@latest
   fi
   success "OpenClaw $(openclaw --version 2>/dev/null | head -1)"
 
@@ -2074,11 +2078,11 @@ install_apitap() {
     return
   fi
 
-  if npm install -g --ignore-scripts @apitap/core 2>&1 | tail -3; then
+  if npm_global_install --ignore-scripts @apitap/core 2>&1 | tail -3; then
     register_mcp "apitap" "apitap-mcp"
     success "ApiTap installed (npm global: @apitap/core)"
   else
-    warn "Could not install ApiTap. Install manually: npm install -g --ignore-scripts @apitap/core"
+    warn "Could not install ApiTap. Install manually: sudo npm install -g --ignore-scripts @apitap/core"
   fi
 }
 
@@ -2720,7 +2724,7 @@ main() {
   # don't need npx --yes (which auto-executes unverified packages)
   if ! command -v clawhub &>/dev/null; then
     info "Installing clawhub (skill marketplace)..."
-    npm install -g --ignore-scripts clawhub 2>/dev/null \
+    npm_global_install --ignore-scripts clawhub 2>/dev/null \
       && success "clawhub installed" \
       || warn "clawhub install failed — skill installs may fall back to git clone"
   fi
@@ -3552,7 +3556,7 @@ install_skill_deps() {
   # --- clawhub (skill marketplace) ---
   if ! command -v clawhub &>/dev/null; then
     info "Installing clawhub..."
-    npm install -g --ignore-scripts clawhub 2>/dev/null \
+    npm_global_install --ignore-scripts clawhub 2>/dev/null \
       && success "clawhub installed" && INSTALLED=$((INSTALLED + 1)) \
       || { warn "clawhub install failed"; FAILED=$((FAILED + 1)); }
   else
@@ -3563,7 +3567,7 @@ install_skill_deps() {
   # --- mcporter (MCP server management) ---
   if ! command -v mcporter &>/dev/null; then
     info "Installing mcporter..."
-    npm install -g --ignore-scripts mcporter 2>/dev/null \
+    npm_global_install --ignore-scripts mcporter 2>/dev/null \
       && success "mcporter installed" && INSTALLED=$((INSTALLED + 1)) \
       || { warn "mcporter install failed"; FAILED=$((FAILED + 1)); }
   else
@@ -3574,7 +3578,7 @@ install_skill_deps() {
   # --- Gemini CLI (Google AI) ---
   if ! command -v gemini &>/dev/null; then
     info "Installing Gemini CLI..."
-    npm install -g --ignore-scripts @google/gemini-cli 2>/dev/null \
+    npm_global_install --ignore-scripts @google/gemini-cli 2>/dev/null \
       && success "Gemini CLI installed" && INSTALLED=$((INSTALLED + 1)) \
       || { warn "Gemini CLI install failed"; FAILED=$((FAILED + 1)); }
   else
@@ -3585,7 +3589,7 @@ install_skill_deps() {
   # --- oracle (web search/scrape CLI) ---
   if ! command -v oracle &>/dev/null; then
     info "Installing oracle..."
-    npm install -g --ignore-scripts @steipete/oracle 2>/dev/null \
+    npm_global_install --ignore-scripts @steipete/oracle 2>/dev/null \
       && success "oracle installed" && INSTALLED=$((INSTALLED + 1)) \
       || { warn "oracle install failed"; FAILED=$((FAILED + 1)); }
   else
@@ -3596,7 +3600,7 @@ install_skill_deps() {
   # --- summarize (URL/file/YouTube summarizer) ---
   if ! command -v summarize &>/dev/null; then
     info "Installing summarize..."
-    npm install -g --ignore-scripts @steipete/summarize 2>/dev/null \
+    npm_global_install --ignore-scripts @steipete/summarize 2>/dev/null \
       && success "summarize installed" && INSTALLED=$((INSTALLED + 1)) \
       || { warn "summarize install failed"; FAILED=$((FAILED + 1)); }
   else
@@ -3607,7 +3611,7 @@ install_skill_deps() {
   # --- obsidian-cli (vault management) ---
   if ! command -v obsidian-cli &>/dev/null; then
     info "Installing obsidian-cli..."
-    npm install -g --ignore-scripts obsidian-cli 2>/dev/null \
+    npm_global_install --ignore-scripts obsidian-cli 2>/dev/null \
       && success "obsidian-cli installed" && INSTALLED=$((INSTALLED + 1)) \
       || { warn "obsidian-cli install failed"; FAILED=$((FAILED + 1)); }
   else
