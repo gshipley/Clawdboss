@@ -362,8 +362,16 @@ ensure_runtime_command_aliases() {
   done
 }
 
+runtime_command_path() {
+  local base="$1"
+  command -v "$base" 2>/dev/null || find_versioned_command "$base"
+}
+
 npm_global_install() {
-  run_privileged npm install -g "$@"
+  local npm_bin
+  npm_bin="$(runtime_command_path npm)"
+  [ -n "$npm_bin" ] || return 1
+  run_privileged "$npm_bin" install -g "$@"
 }
 
 show_node_manual_install_hint() {
