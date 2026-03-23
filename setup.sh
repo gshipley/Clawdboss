@@ -382,22 +382,76 @@ npm_global_install() {
   run_privileged env PATH="$npm_path" "$npm_bin" install -g "$@"
 }
 
+npm_global_root() {
+  local npm_bin
+  local node_bin
+  local npm_path
+  npm_bin="$(runtime_command_path npm)"
+  node_bin="$(runtime_command_path node)"
+  [ -n "$npm_bin" ] || return 1
+
+  npm_path="/usr/local/bin:/usr/bin:/bin"
+  [ -n "$node_bin" ] && npm_path="$(dirname "$node_bin"):$npm_path"
+  npm_path="$(dirname "$npm_bin"):$npm_path"
+
+  run_privileged env PATH="$npm_path" "$npm_bin" root -g 2>/dev/null | tail -1
+}
+
 openclaw_package_dir() {
   local openclaw_bin
   local resolved
+  local npm_root
 
   openclaw_bin="$(runtime_command_path openclaw)"
-  [ -n "$openclaw_bin" ] || return 1
+  if [ -n "$openclaw_bin" ]; then
+    resolved="$(realpath "$openclaw_bin" 2>/dev/null || readlink -f "$openclaw_bin" 2>/dev/null || echo "$openclaw_bin")"
+    case "$resolved" in
+      */openclaw.mjs)
+        dirname "$resolved"
+        return 0
+        ;;
+    esac
+  fi
 
-  resolved="$(realpath "$openclaw_bin" 2>/dev/null || readlink -f "$openclaw_bin" 2>/dev/null || echo "$openclaw_bin")"
-  case "$resolved" in
-    */openclaw.mjs)
-      dirname "$resolved"
-      ;;
-    *)
-      return 1
-      ;;
-  esac
+  npm_root="$(npm_global_root 2>/dev/null || true)"
+  if [ -n "$npm_root" ] && [ -d "$npm_root/openclaw" ]; then
+    echo "$npm_root/openclaw"
+    return 0
+  fi
+
+  return 1
+}
+
+ensure_openclaw_available() {
+  local openclaw_bin
+  local node_bin
+  local package_dir
+  local openclaw_mjs
+
+  openclaw_bin="$(runtime_command_path openclaw)"
+  if [ -n "$openclaw_bin" ]; then
+    return 0
+  fi
+
+  node_bin="$(runtime_command_path node)"
+  package_dir="$(openclaw_package_dir 2>/dev/null || true)"
+  openclaw_mjs="$package_dir/openclaw.mjs"
+
+  if [ -z "$node_bin" ] || [ -z "$package_dir" ] || [ ! -f "$openclaw_mjs" ]; then
+    return 1
+  fi
+
+  run_privileged tee /usr/local/bin/openclaw > /dev/null <<EOF
+#!/usr/bin/env bash
+exec "$node_bin" "$openclaw_mjs" "\$@"
+EOF
+  run_privileged chmod 755 /usr/local/bin/openclaw || return 1
+  if command -v restorecon &>/dev/null; then
+    run_privileged restorecon -v /usr/local/bin/openclaw "$openclaw_mjs" >/dev/null 2>&1 || true
+  fi
+
+  hash -r 2>/dev/null || true
+  [ -n "$(runtime_command_path openclaw)" ]
 }
 
 CLAW_HUB_BIN=""
@@ -748,6 +802,7 @@ preflight() {
     warn "OpenClaw not found. Installing..."
     npm_global_install openclaw@latest
   fi
+  ensure_openclaw_available || true
   success "OpenClaw $(openclaw --version 2>/dev/null | head -1)"
 
   mkdir -p "$OPENCLAW_DIR"
