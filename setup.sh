@@ -480,6 +480,7 @@ clawhub_package_dir() {
 }
 
 CLAW_HUB_BIN=""
+CLAW_HUB_LAST_ERROR=""
 
 ensure_clawhub_available() {
   local node_bin
@@ -513,6 +514,95 @@ EOF
   hash -r 2>/dev/null || true
   CLAW_HUB_BIN="$(runtime_command_path clawhub)"
   [ -n "$CLAW_HUB_BIN" ] && "$CLAW_HUB_BIN" --help >/dev/null 2>&1
+}
+
+clawhub_skill_dir() {
+  local slug="$1"
+  echo "$OPENCLAW_DIR/workspace/skills/$slug"
+}
+
+clawhub_install_skill() {
+  local slug="$1"
+  local skill_dir
+  local output=""
+  local attempt
+  local max_attempts=3
+  local delay=2
+
+  CLAW_HUB_LAST_ERROR=""
+  skill_dir="$(clawhub_skill_dir "$slug")"
+  if [ -d "$skill_dir" ]; then
+    return 0
+  fi
+
+  ensure_clawhub_available || return 1
+
+  for attempt in $(seq 1 "$max_attempts"); do
+    if output="$("$CLAW_HUB_BIN" --no-input --workdir "$OPENCLAW_DIR/workspace" install "$slug" 2>&1)"; then
+      return 0
+    fi
+
+    CLAW_HUB_LAST_ERROR="$output"
+
+    if echo "$output" | grep -qi "Rate limit exceeded"; then
+      sleep "$delay"
+      delay=$((delay * 2))
+      continue
+    fi
+
+    if echo "$output" | grep -qiE "already exists|exists and is not empty"; then
+      return 0
+    fi
+
+    break
+  done
+
+  return 1
+}
+
+ensure_playwright_mcp_available() {
+  local playwright_mcp_bin
+  local node_bin
+  local npm_root
+  local cli_js
+
+  playwright_mcp_bin="$(command -v playwright-mcp 2>/dev/null || true)"
+  if [ -n "$playwright_mcp_bin" ] && "$playwright_mcp_bin" --help >/dev/null 2>&1; then
+    echo "$playwright_mcp_bin"
+    return 0
+  fi
+
+  npm_global_install @playwright/mcp@latest >/dev/null 2>&1 || return 1
+
+  playwright_mcp_bin="$(command -v playwright-mcp 2>/dev/null || true)"
+  if [ -n "$playwright_mcp_bin" ] && "$playwright_mcp_bin" --help >/dev/null 2>&1; then
+    echo "$playwright_mcp_bin"
+    return 0
+  fi
+
+  node_bin="$(runtime_command_path node)"
+  npm_root="$(npm_global_root 2>/dev/null || true)"
+  cli_js="$npm_root/@playwright/mcp/cli.js"
+
+  if [ -n "$node_bin" ] && [ -f "$cli_js" ]; then
+    run_privileged tee /usr/local/bin/playwright-mcp > /dev/null <<EOF
+#!/usr/bin/env bash
+exec "$node_bin" "$cli_js" "\$@"
+EOF
+    run_privileged chmod 755 /usr/local/bin/playwright-mcp || return 1
+    if command -v restorecon &>/dev/null; then
+      run_privileged restorecon -v /usr/local/bin/playwright-mcp "$cli_js" >/dev/null 2>&1 || true
+    fi
+  fi
+
+  hash -r 2>/dev/null || true
+  playwright_mcp_bin="$(command -v playwright-mcp 2>/dev/null || true)"
+  if [ -n "$playwright_mcp_bin" ] && "$playwright_mcp_bin" --help >/dev/null 2>&1; then
+    echo "$playwright_mcp_bin"
+    return 0
+  fi
+
+  return 1
 }
 
 show_node_manual_install_hint() {
@@ -2426,7 +2516,7 @@ install_github_skill() {
   fi
 
   # Install the OpenClaw GitHub skill
-  if ensure_clawhub_available && "$CLAW_HUB_BIN" --workdir "$OPENCLAW_DIR/workspace" install github; then
+  if clawhub_install_skill github; then
     success "GitHub skill installed"
   else
     info "clawhub install failed — copying from bundled skills"
@@ -2455,7 +2545,7 @@ install_humanizer() {
     return
   fi
 
-  if ensure_clawhub_available && "$CLAW_HUB_BIN" --workdir "$OPENCLAW_DIR/workspace" install humanizer; then
+  if clawhub_install_skill humanizer; then
     success "Humanizer skill installed"
   else
     # Fallback to git clone
@@ -2491,7 +2581,7 @@ install_self_improving() {
     return
   fi
 
-  if ensure_clawhub_available && "$CLAW_HUB_BIN" --workdir "$OPENCLAW_DIR/workspace" install self-improving; then
+  if clawhub_install_skill self-improving; then
     success "Self-Improving Agent skill installed"
   else
     warn "Could not install. Install manually: clawhub install self-improving"
@@ -2518,7 +2608,7 @@ install_find_skills() {
     return
   fi
 
-  if ensure_clawhub_available && "$CLAW_HUB_BIN" --workdir "$OPENCLAW_DIR/workspace" install find-skills; then
+  if clawhub_install_skill find-skills; then
     success "Find Skills installed"
   else
     warn "Could not install. Install manually: clawhub install find-skills"
@@ -2545,7 +2635,7 @@ install_marketing_skills() {
     return
   fi
 
-  if ensure_clawhub_available && "$CLAW_HUB_BIN" --workdir "$OPENCLAW_DIR/workspace" install marketing-skills; then
+  if clawhub_install_skill marketing-skills; then
     success "Marketing Skills installed"
   else
     warn "Could not install. Install manually: clawhub install marketing-skills"
@@ -2608,10 +2698,27 @@ install_playwright() {
     return
   fi
 
-  if ensure_clawhub_available && "$CLAW_HUB_BIN" --workdir "$OPENCLAW_DIR/workspace" install playwright-mcp; then
+  if clawhub_install_skill playwright-mcp; then
     success "Playwright MCP skill installed"
   else
-    warn "clawhub install failed. Install manually: clawhub install playwright-mcp"
+    local PLAYWRIGHT_MCP_BIN
+    local PLAYWRIGHT_CMD
+    PLAYWRIGHT_MCP_BIN="$(ensure_playwright_mcp_available 2>/dev/null || true)"
+    if [ -n "$PLAYWRIGHT_MCP_BIN" ]; then
+      PLAYWRIGHT_CMD="$PLAYWRIGHT_MCP_BIN --headless"
+      if command -v chromium &>/dev/null; then
+        PLAYWRIGHT_CMD="$PLAYWRIGHT_CMD --executable-path $(command -v chromium)"
+      elif command -v chromium-browser &>/dev/null; then
+        PLAYWRIGHT_CMD="$PLAYWRIGHT_CMD --executable-path $(command -v chromium-browser)"
+      fi
+      register_mcp "playwright" "$PLAYWRIGHT_CMD"
+      success "Playwright MCP installed via npm fallback"
+    elif [ -n "$CLAW_HUB_LAST_ERROR" ]; then
+      warn "clawhub install failed: $(echo "$CLAW_HUB_LAST_ERROR" | tail -1)"
+      warn "Install manually: clawhub install playwright-mcp"
+    else
+      warn "clawhub install failed. Install manually: clawhub install playwright-mcp"
+    fi
   fi
 }
 
