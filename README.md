@@ -1,6 +1,6 @@
 # 🦞 Clawdboss
 
-**Pre-hardened, multi-agent OpenClaw setup by NanoFlow.**
+**Pre-hardened, multi-agent OpenClaw setup by NanoFlow and ported to Fedora by gshipley.**
 
 One script to go from zero to a fully secured, multi-agent AI assistant on Discord — with prompt injection defense, security auditing, WAL Protocol for context persistence, and best practices baked in.
 

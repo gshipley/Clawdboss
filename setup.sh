@@ -831,6 +831,12 @@ preflight() {
     missing_pkgs+=("${build_pkgs[@]}")
   fi
   command -v pip3 &>/dev/null || missing_pkgs+=(python3-pip)
+  if [ "$PKG_MANAGER" = "dnf" ]; then
+    command -v uv &>/dev/null || missing_pkgs+=(uv)
+    if ! command -v chromium &>/dev/null && ! command -v chromium-browser &>/dev/null; then
+      missing_pkgs+=(chromium)
+    fi
+  fi
 
   if [ "${#missing_pkgs[@]}" -gt 0 ]; then
     info "Installing dependencies: ${missing_pkgs[*]}"
