@@ -382,6 +382,38 @@ npm_global_install() {
   run_privileged env PATH="$npm_path" "$npm_bin" install -g "$@"
 }
 
+openclaw_package_dir() {
+  local openclaw_bin
+  local resolved
+
+  openclaw_bin="$(runtime_command_path openclaw)"
+  [ -n "$openclaw_bin" ] || return 1
+
+  resolved="$(realpath "$openclaw_bin" 2>/dev/null || readlink -f "$openclaw_bin" 2>/dev/null || echo "$openclaw_bin")"
+  case "$resolved" in
+    */openclaw.mjs)
+      dirname "$resolved"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+CLAW_HUB_BIN=""
+
+ensure_clawhub_available() {
+  CLAW_HUB_BIN="$(runtime_command_path clawhub)"
+  if [ -n "$CLAW_HUB_BIN" ]; then
+    return 0
+  fi
+
+  npm_global_install --ignore-scripts clawhub >/dev/null 2>&1 || return 1
+  hash -r 2>/dev/null || true
+  CLAW_HUB_BIN="$(runtime_command_path clawhub)"
+  [ -n "$CLAW_HUB_BIN" ]
+}
+
 show_node_manual_install_hint() {
   case "$PKG_MANAGER" in
     dnf)
@@ -2189,9 +2221,11 @@ install_github_skill() {
   fi
 
   # Install the OpenClaw GitHub skill
-  clawhub --workdir "$OPENCLAW_DIR/workspace" install github \
-    && success "GitHub skill installed" \
-    || { info "clawhub install failed — copying from bundled skills"; }
+  if ensure_clawhub_available && "$CLAW_HUB_BIN" --workdir "$OPENCLAW_DIR/workspace" install github; then
+    success "GitHub skill installed"
+  else
+    info "clawhub install failed — copying from bundled skills"
+  fi
 
   command -v gh &>/dev/null && success "gh CLI available" || warn "gh CLI not found — install from https://cli.github.com"
 }
@@ -2216,7 +2250,7 @@ install_humanizer() {
     return
   fi
 
-  if clawhub --workdir "$OPENCLAW_DIR/workspace" install humanizer; then
+  if ensure_clawhub_available && "$CLAW_HUB_BIN" --workdir "$OPENCLAW_DIR/workspace" install humanizer; then
     success "Humanizer skill installed"
   else
     # Fallback to git clone
@@ -2252,7 +2286,7 @@ install_self_improving() {
     return
   fi
 
-  if clawhub --workdir "$OPENCLAW_DIR/workspace" install self-improving; then
+  if ensure_clawhub_available && "$CLAW_HUB_BIN" --workdir "$OPENCLAW_DIR/workspace" install self-improving; then
     success "Self-Improving Agent skill installed"
   else
     warn "Could not install. Install manually: clawhub install self-improving"
@@ -2279,7 +2313,7 @@ install_find_skills() {
     return
   fi
 
-  if clawhub --workdir "$OPENCLAW_DIR/workspace" install find-skills; then
+  if ensure_clawhub_available && "$CLAW_HUB_BIN" --workdir "$OPENCLAW_DIR/workspace" install find-skills; then
     success "Find Skills installed"
   else
     warn "Could not install. Install manually: clawhub install find-skills"
@@ -2306,7 +2340,7 @@ install_marketing_skills() {
     return
   fi
 
-  if clawhub --workdir "$OPENCLAW_DIR/workspace" install marketing-skills; then
+  if ensure_clawhub_available && "$CLAW_HUB_BIN" --workdir "$OPENCLAW_DIR/workspace" install marketing-skills; then
     success "Marketing Skills installed"
   else
     warn "Could not install. Install manually: clawhub install marketing-skills"
@@ -2334,7 +2368,13 @@ install_healthcheck() {
   fi
 
   # Healthcheck is a built-in skill, just verify it's available
-  HEALTHCHECK_PATH="$(npm root -g)/openclaw/skills/healthcheck"
+  local OPENCLAW_PACKAGE_DIR
+  OPENCLAW_PACKAGE_DIR="$(openclaw_package_dir 2>/dev/null || true)"
+  if [ -z "$OPENCLAW_PACKAGE_DIR" ]; then
+    OPENCLAW_PACKAGE_DIR="$(npm root -g 2>/dev/null)/openclaw"
+  fi
+
+  HEALTHCHECK_PATH="$OPENCLAW_PACKAGE_DIR/skills/healthcheck"
   if [ -d "$HEALTHCHECK_PATH" ]; then
     success "Healthcheck skill available (built-in with OpenClaw)"
   else
@@ -2363,7 +2403,7 @@ install_playwright() {
     return
   fi
 
-  if clawhub --workdir "$OPENCLAW_DIR/workspace" install playwright-mcp; then
+  if ensure_clawhub_available && "$CLAW_HUB_BIN" --workdir "$OPENCLAW_DIR/workspace" install playwright-mcp; then
     success "Playwright MCP skill installed"
   else
     warn "clawhub install failed. Install manually: clawhub install playwright-mcp"
@@ -2738,11 +2778,10 @@ main() {
 
   # Pre-install clawhub globally with --ignore-scripts so skill installers
   # don't need npx --yes (which auto-executes unverified packages)
-  if ! command -v clawhub &>/dev/null; then
-    info "Installing clawhub (skill marketplace)..."
-    npm_global_install --ignore-scripts clawhub 2>/dev/null \
-      && success "clawhub installed" \
-      || warn "clawhub install failed — skill installs may fall back to git clone"
+  if ! ensure_clawhub_available; then
+    warn "clawhub install failed — skill installs may fall back to git clone"
+  else
+    success "clawhub installed"
   fi
 
   install_octave
@@ -3146,7 +3185,12 @@ JAIL_EOF
     info "Installing memory-hybrid plugin..."
 
     local EXTENSIONS_DIR
-    EXTENSIONS_DIR="$(npm root -g)/openclaw/extensions/memory-hybrid"
+    local OPENCLAW_PACKAGE_DIR
+    OPENCLAW_PACKAGE_DIR="$(openclaw_package_dir 2>/dev/null || true)"
+    if [ -z "$OPENCLAW_PACKAGE_DIR" ]; then
+      OPENCLAW_PACKAGE_DIR="$(npm root -g 2>/dev/null)/openclaw"
+    fi
+    EXTENSIONS_DIR="$OPENCLAW_PACKAGE_DIR/extensions/memory-hybrid"
 
     if [ -d "$EXTENSIONS_DIR" ] && [ -f "$EXTENSIONS_DIR/index.ts" ]; then
       info "memory-hybrid already installed at $EXTENSIONS_DIR"
@@ -3570,14 +3614,20 @@ install_skill_deps() {
   echo -e "  ${BOLD}Node.js tools:${NC}"
 
   # --- clawhub (skill marketplace) ---
-  if ! command -v clawhub &>/dev/null; then
-    info "Installing clawhub..."
-    npm_global_install --ignore-scripts clawhub 2>/dev/null \
-      && success "clawhub installed" && INSTALLED=$((INSTALLED + 1)) \
-      || { warn "clawhub install failed"; FAILED=$((FAILED + 1)); }
+  local HAD_CLAWHUB=false
+  command -v clawhub &>/dev/null && HAD_CLAWHUB=true
+
+  if ! ensure_clawhub_available; then
+    warn "clawhub install failed"
+    FAILED=$((FAILED + 1))
   else
-    success "clawhub ✓"
-    SKIPPED=$((SKIPPED + 1))
+    if [ "$HAD_CLAWHUB" = true ]; then
+      success "clawhub ✓"
+      SKIPPED=$((SKIPPED + 1))
+    else
+      success "clawhub installed"
+      INSTALLED=$((INSTALLED + 1))
+    fi
   fi
 
   # --- mcporter (MCP server management) ---
