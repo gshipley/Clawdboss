@@ -1172,6 +1172,7 @@ collect_keys() {
   echo "  3) Google Gemini API"
   echo "  4) OpenRouter (400+ models)"
   echo "  5) Kimi / Moonshot AI"
+  echo "  0) OpenAI-compatible endpoint (custom / self-hosted)"
   echo ""
   echo "  ${BOLD}OAuth / subscription login (no API key needed):${NC}"
   echo "  6) GitHub Copilot (free with Copilot subscription)"
@@ -1179,13 +1180,63 @@ collect_keys() {
   echo "  8) Google Gemini CLI OAuth (Google account)"
   echo "  9) Anthropic Claude setup-token (Max subscription)"
   echo ""
-  echo "  0) Other / manual config"
+  echo "  m) Other / manual config"
   echo ""
-  ask "Choose provider [0-9]"
+  ask "Choose provider [0-9, m]"
   read -r PROVIDER_CHOICE
   PROVIDER_CHOICE="${PROVIDER_CHOICE:-6}"
 
   case "$PROVIDER_CHOICE" in
+    0)
+      LLM_PROVIDER="openai-compat"
+      info "This will be configured as an OpenAI-compatible endpoint in openclaw.json"
+      while true; do
+        ask "OpenAI-compatible base URL (e.g. https://192.168.0.161:5555/v1)"
+        read -r OPENAI_COMPAT_BASE_URL
+        OPENAI_COMPAT_BASE_URL="${OPENAI_COMPAT_BASE_URL%/}"
+        if [[ "$OPENAI_COMPAT_BASE_URL" =~ ^https?://[^[:space:]]+$ ]]; then
+          break
+        fi
+        error "Enter a full http(s) URL such as https://192.168.0.161:5555/v1"
+      done
+
+      ask "API key / bearer token (optional, leave blank if not required)"
+      read -rs OPENAI_COMPAT_API_KEY
+      echo ""
+
+      while true; do
+        ask "Primary model ID (e.g. gpt-4.1, qwen2.5-coder, llama-3.3-70b)"
+        read -r OPENAI_COMPAT_PRIMARY_MODEL
+        if [ -n "$OPENAI_COMPAT_PRIMARY_MODEL" ]; then
+          break
+        fi
+        error "Primary model ID is required"
+      done
+
+      ask "Heartbeat model ID [${OPENAI_COMPAT_PRIMARY_MODEL}]"
+      read -r OPENAI_COMPAT_HEARTBEAT_MODEL
+      OPENAI_COMPAT_HEARTBEAT_MODEL="${OPENAI_COMPAT_HEARTBEAT_MODEL:-$OPENAI_COMPAT_PRIMARY_MODEL}"
+
+      while true; do
+        ask "Context window [131072]"
+        read -r OPENAI_COMPAT_CONTEXT_WINDOW
+        OPENAI_COMPAT_CONTEXT_WINDOW="${OPENAI_COMPAT_CONTEXT_WINDOW:-131072}"
+        if [[ "$OPENAI_COMPAT_CONTEXT_WINDOW" =~ ^[0-9]+$ ]] && [ "$OPENAI_COMPAT_CONTEXT_WINDOW" -gt 0 ]; then
+          break
+        fi
+        error "Context window must be a positive integer"
+      done
+
+      while true; do
+        ask "Max output tokens [16384]"
+        read -r OPENAI_COMPAT_MAX_TOKENS
+        OPENAI_COMPAT_MAX_TOKENS="${OPENAI_COMPAT_MAX_TOKENS:-16384}"
+        if [[ "$OPENAI_COMPAT_MAX_TOKENS" =~ ^[0-9]+$ ]] && [ "$OPENAI_COMPAT_MAX_TOKENS" -gt 0 ]; then
+          break
+        fi
+        error "Max output tokens must be a positive integer"
+      done
+      ;;
     1)
       LLM_PROVIDER="openai"
       ask "OpenAI API key (sk-...)"
@@ -1245,7 +1296,7 @@ collect_keys() {
       warn "Anthropic may restrict non-Claude usage. Check current terms."
       OAUTH_DEFERRED="anthropic"
       ;;
-    0)
+    m|M)
       LLM_PROVIDER="manual"
       warn "You'll need to configure the model provider in openclaw.json manually"
       ;;
@@ -1469,6 +1520,11 @@ ENVEOF
 
   if [ "$LLM_PROVIDER" = "openai" ]; then
     echo "OPENAI_API_KEY=${OPENAI_DIRECT_KEY}" >> "$ENV_FILE"
+  elif [ "$LLM_PROVIDER" = "openai-compat" ]; then
+    cat >> "$ENV_FILE" << ENVEOF
+OPENAI_COMPAT_BASE_URL=${OPENAI_COMPAT_BASE_URL}
+OPENAI_COMPAT_API_KEY=${OPENAI_COMPAT_API_KEY:-}
+ENVEOF
   elif [ "$LLM_PROVIDER" = "anthropic" ]; then
     echo "ANTHROPIC_API_KEY=${ANTHROPIC_KEY}" >> "$ENV_FILE"
   elif [ "$LLM_PROVIDER" = "gemini" ]; then
@@ -1546,6 +1602,11 @@ generate_config() {
   export CB_ELEVENLABS_KEY="${ELEVENLABS_KEY:-}"
   export CB_BRAVE_KEY="${BRAVE_KEY:-}"
   export CB_GEMINI_SKILLS_KEY="${GEMINI_SKILLS_KEY:-${GEMINI_KEY:-}}"
+  export CB_OPENAI_COMPAT_BASE_URL="${OPENAI_COMPAT_BASE_URL:-}"
+  export CB_OPENAI_COMPAT_PRIMARY_MODEL="${OPENAI_COMPAT_PRIMARY_MODEL:-}"
+  export CB_OPENAI_COMPAT_HEARTBEAT_MODEL="${OPENAI_COMPAT_HEARTBEAT_MODEL:-}"
+  export CB_OPENAI_COMPAT_CONTEXT_WINDOW="${OPENAI_COMPAT_CONTEXT_WINDOW:-131072}"
+  export CB_OPENAI_COMPAT_MAX_TOKENS="${OPENAI_COMPAT_MAX_TOKENS:-16384}"
   export CB_USE_DISCORD="$USE_DISCORD"
   export CB_USE_TELEGRAM="$USE_TELEGRAM"
   export CB_USE_CONSOLE="$USE_CONSOLE"
@@ -1587,6 +1648,11 @@ openai_skills_key = os.environ.get('CB_OPENAI_SKILLS_KEY', '')
 elevenlabs_key = os.environ.get('CB_ELEVENLABS_KEY', '')
 brave_key = os.environ.get('CB_BRAVE_KEY', '')
 gemini_skills_key = os.environ.get('CB_GEMINI_SKILLS_KEY', '')
+openai_compat_base_url = os.environ.get('CB_OPENAI_COMPAT_BASE_URL', '')
+openai_compat_primary_model = os.environ.get('CB_OPENAI_COMPAT_PRIMARY_MODEL', '')
+openai_compat_heartbeat_model = os.environ.get('CB_OPENAI_COMPAT_HEARTBEAT_MODEL', '') or openai_compat_primary_model
+openai_compat_context_window = int(os.environ.get('CB_OPENAI_COMPAT_CONTEXT_WINDOW', '131072') or '131072')
+openai_compat_max_tokens = int(os.environ.get('CB_OPENAI_COMPAT_MAX_TOKENS', '16384') or '16384')
 
 with open(os.path.join(templates_dir, "openclaw.template.json")) as f:
     config = json.load(f)
@@ -1643,6 +1709,7 @@ allow_agents = ["main"]
 # Determine specialist agent model based on LLM provider
 specialist_model_map = {
     "copilot": "copilot/claude-sonnet-4.5",
+    "openai-compat": f"openai-compat/{openai_compat_heartbeat_model or openai_compat_primary_model or 'gpt-4.1-mini'}",
     "openai": "openai/gpt-4.1-mini",
     "openai-codex-oauth": "openai-codex/gpt-4.1",
     "anthropic": "anthropic/claude-sonnet-4-5-20250514",
@@ -1737,7 +1804,35 @@ if len(allow_agents) > 1:
     }
 
 # LLM provider config
-if llm_provider == "openai":
+if llm_provider == "openai-compat":
+    compat_models = [
+        {
+            "id": openai_compat_primary_model,
+            "name": openai_compat_primary_model,
+            "input": ["text", "image"],
+            "contextWindow": openai_compat_context_window,
+            "maxTokens": openai_compat_max_tokens
+        }
+    ]
+    if openai_compat_heartbeat_model and openai_compat_heartbeat_model != openai_compat_primary_model:
+        compat_models.append({
+            "id": openai_compat_heartbeat_model,
+            "name": openai_compat_heartbeat_model,
+            "input": ["text", "image"],
+            "contextWindow": openai_compat_context_window,
+            "maxTokens": openai_compat_max_tokens
+        })
+    config['models']['providers'] = {
+        "openai-compat": {
+            "baseUrl": "${OPENAI_COMPAT_BASE_URL}",
+            "apiKey": "${OPENAI_COMPAT_API_KEY}",
+            "api": "openai-completions",
+            "models": compat_models
+        }
+    }
+    config['agents']['defaults']['model']['primary'] = f"openai-compat/{openai_compat_primary_model}"
+    config['agents']['defaults']['heartbeat']['model'] = f"openai-compat/{openai_compat_heartbeat_model or openai_compat_primary_model}"
+elif llm_provider == "openai":
     config['models']['providers'] = {
         "openai": {
             "baseUrl": "https://api.openai.com/v1",
@@ -1859,6 +1954,8 @@ PYEOF
   unset CB_TEMPLATES_DIR CB_WORKSPACE_DIR CB_OPENCLAW_DIR CB_DISCORD_GUILD CB_DISCORD_OWNER
   unset CB_DISCORD_MAIN_CHANNEL CB_DEPLOY_COMMS CB_DEPLOY_RESEARCH CB_DEPLOY_SECURITY
   unset CB_LLM_PROVIDER CB_OPENAI_SKILLS_KEY CB_ELEVENLABS_KEY CB_BRAVE_KEY CB_GEMINI_SKILLS_KEY
+  unset CB_OPENAI_COMPAT_BASE_URL CB_OPENAI_COMPAT_PRIMARY_MODEL CB_OPENAI_COMPAT_HEARTBEAT_MODEL
+  unset CB_OPENAI_COMPAT_CONTEXT_WINDOW CB_OPENAI_COMPAT_MAX_TOKENS
   unset CB_COMMS_NAME CB_DISCORD_COMMS_CHANNEL CB_RESEARCH_NAME CB_DISCORD_RESEARCH_CHANNEL
   unset CB_SECURITY_NAME CB_DISCORD_SECURITY_CHANNEL CB_USE_TELEGRAM CB_TELEGRAM_OWNER 2>/dev/null || true
 }
