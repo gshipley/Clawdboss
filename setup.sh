@@ -328,6 +328,40 @@ manual_pkg_install_hint() {
   esac
 }
 
+find_versioned_command() {
+  local base="$1"
+  local best_path=""
+  local best_version=-1
+  local candidate version
+
+  for candidate in "/usr/bin/${base}-"* "/bin/${base}-"*; do
+    [ -x "$candidate" ] || continue
+    version="${candidate##*-}"
+    [[ "$version" =~ ^[0-9]+$ ]] || continue
+    if [ "$version" -gt "$best_version" ]; then
+      best_version="$version"
+      best_path="$candidate"
+    fi
+  done
+
+  [ -n "$best_path" ] && echo "$best_path"
+}
+
+ensure_runtime_command_aliases() {
+  export PATH="$HOME/.local/bin:$PATH"
+  mkdir -p "$HOME/.local/bin"
+
+  local base resolved
+  for base in node npm npx; do
+    if ! command -v "$base" &>/dev/null; then
+      resolved="$(find_versioned_command "$base")"
+      if [ -n "$resolved" ]; then
+        ln -sf "$resolved" "$HOME/.local/bin/$base"
+      fi
+    fi
+  done
+}
+
 show_node_manual_install_hint() {
   case "$PKG_MANAGER" in
     dnf)
@@ -597,6 +631,7 @@ detect_platform
 
 preflight() {
   info "Running pre-flight checks..."
+  ensure_runtime_command_aliases
 
   # Auto-install Node.js 22 if not found or version too old
   local need_node=false
@@ -614,6 +649,7 @@ preflight() {
   if [ "$need_node" = true ]; then
     info "Installing Node.js 22+..."
     if install_nodejs_runtime; then
+      ensure_runtime_command_aliases
       if command -v node &>/dev/null; then
         node_version_major=$(node -v | sed 's/v//' | cut -d. -f1)
       fi
