@@ -369,9 +369,17 @@ runtime_command_path() {
 
 npm_global_install() {
   local npm_bin
+  local node_bin
+  local npm_path
   npm_bin="$(runtime_command_path npm)"
+  node_bin="$(runtime_command_path node)"
   [ -n "$npm_bin" ] || return 1
-  run_privileged "$npm_bin" install -g "$@"
+
+  npm_path="/usr/local/bin:/usr/bin:/bin"
+  [ -n "$node_bin" ] && npm_path="$(dirname "$node_bin"):$npm_path"
+  npm_path="$(dirname "$npm_bin"):$npm_path"
+
+  run_privileged env PATH="$npm_path" "$npm_bin" install -g "$@"
 }
 
 show_node_manual_install_hint() {
