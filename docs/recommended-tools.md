@@ -221,11 +221,11 @@ npx clawhub@latest install marketing-skills
 
 **Install:** Prompted during setup, or manually:
 ```bash
-# Debian/Ubuntu
-sudo apt-get install fail2ban
-
 # Fedora/RHEL
 sudo dnf install fail2ban
+
+# Debian/Ubuntu
+sudo apt-get install fail2ban
 
 # Arch
 sudo pacman -S fail2ban

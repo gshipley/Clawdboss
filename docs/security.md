@@ -122,11 +122,11 @@ enabled = true       # Protect SSH by default
 ### Manual Installation
 
 ```bash
-# Debian/Ubuntu
-sudo apt-get install fail2ban
-
 # Fedora/RHEL
 sudo dnf install fail2ban
+
+# Debian/Ubuntu
+sudo apt-get install fail2ban
 
 # Arch
 sudo pacman -S fail2ban

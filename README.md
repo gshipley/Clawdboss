@@ -31,13 +31,13 @@ One script to go from zero to a fully secured, multi-agent AI assistant on Disco
 
 ## Quick Start
 
-### Ubuntu VPS (Fresh Install)
+### Fedora Workstation / Server (Fresh Install)
 
-SSH into your server and run:
+SSH into your Fedora machine and run:
 
 ```bash
 # 1. Clone Clawdboss
-apt-get update && apt-get install -y git
+sudo dnf install -y git
 git clone https://github.com/NanoFlow-io/clawdboss.git
 cd clawdboss
 
@@ -45,7 +45,7 @@ cd clawdboss
 ./setup.sh
 ```
 
-That's it. The wizard auto-installs all dependencies (Node.js 22, Python, git, build-essential, OpenClaw) and walks you through everything else.
+That's it. On Fedora, the wizard uses `dnf` for system packages, `firewalld` for host hardening, and walks you through everything else. Debian/Ubuntu still work as a fallback path.
 
 ### What You'll Need Ready
 
@@ -165,7 +165,7 @@ The setup wizard offers each of these individually. All are free and open-source
 | **Find Skills** | Discover and install new skills on-the-fly from ClawHub | `clawhub install` |
 | **Marketing Skills** | 15+ marketing reference skills (copywriting, CRO, SEO, email, ads) | `clawhub install` |
 | **Healthcheck** | Host security audits: firewall, SSH, updates, exposure | Built-in |
-| **[fail2ban](https://github.com/fail2ban/fail2ban)** | Brute-force protection — auto-bans malicious IPs | `apt install fail2ban` |
+| **[fail2ban](https://github.com/fail2ban/fail2ban)** | Brute-force protection — auto-bans malicious IPs | `dnf install fail2ban` |
 
 See [docs/recommended-tools.md](docs/recommended-tools.md) for detailed install guides.
 
@@ -233,7 +233,7 @@ openclaw hybrid-mem prune           # Remove expired memories
 
 ## Requirements
 
-- Ubuntu 22.04+ (or any Linux with bash)
+- Fedora (dnf-based) recommended, or any Linux with bash
 - Node.js 22+ (setup wizard installs OpenClaw automatically)
 - 2GB+ RAM recommended (1GB works for Solo tier)
 - A Discord bot token ([create one here](https://discord.com/developers/applications)) and/or Telegram bot token (from [@BotFather](https://t.me/BotFather))

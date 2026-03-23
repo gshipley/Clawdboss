@@ -202,6 +202,396 @@ safe_write_check() {
 }
 
 # ============================================================
+# Platform / package helpers
+# ============================================================
+
+OS_ID=""
+OS_LIKE=""
+PKG_MANAGER=""
+DEFAULT_FIREWALL=""
+
+detect_platform() {
+  if [ -f /etc/os-release ]; then
+    # shellcheck disable=SC1091
+    source /etc/os-release
+    OS_ID="${ID:-}"
+    OS_LIKE="${ID_LIKE:-}"
+  fi
+
+  if command -v dnf &>/dev/null; then
+    PKG_MANAGER="dnf"
+    DEFAULT_FIREWALL="firewalld"
+  elif command -v apt-get &>/dev/null; then
+    PKG_MANAGER="apt"
+    DEFAULT_FIREWALL="ufw"
+  elif command -v pacman &>/dev/null; then
+    PKG_MANAGER="pacman"
+    DEFAULT_FIREWALL=""
+  else
+    PKG_MANAGER=""
+    DEFAULT_FIREWALL=""
+  fi
+}
+
+run_privileged() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+  elif command -v sudo &>/dev/null; then
+    sudo "$@"
+  else
+    "$@"
+  fi
+}
+
+pkg_update() {
+  case "$PKG_MANAGER" in
+    apt)
+      run_privileged apt-get update -qq
+      ;;
+    dnf)
+      run_privileged dnf makecache -q
+      ;;
+    pacman)
+      run_privileged pacman -Sy --noconfirm >/dev/null
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+pkg_install() {
+  local quiet=false
+  if [ "${1:-}" = "--quiet" ]; then
+    quiet=true
+    shift
+  fi
+
+  [ "$#" -gt 0 ] || return 0
+
+  case "$PKG_MANAGER" in
+    apt)
+      if [ "$quiet" = true ]; then
+        run_privileged apt-get install -y -qq "$@"
+      else
+        run_privileged apt-get install -y "$@"
+      fi
+      ;;
+    dnf)
+      if [ "$quiet" = true ]; then
+        run_privileged dnf install -y -q "$@"
+      else
+        run_privileged dnf install -y "$@"
+      fi
+      ;;
+    pacman)
+      if [ "$quiet" = true ]; then
+        run_privileged pacman -S --noconfirm --needed "$@" >/dev/null
+      else
+        run_privileged pacman -S --noconfirm --needed "$@"
+      fi
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+build_tool_packages() {
+  case "$PKG_MANAGER" in
+    dnf)
+      echo "gcc-c++ make"
+      ;;
+    pacman)
+      echo "base-devel"
+      ;;
+    *)
+      echo "build-essential"
+      ;;
+  esac
+}
+
+manual_pkg_install_hint() {
+  case "$PKG_MANAGER" in
+    dnf)
+      echo "sudo dnf install -y $*"
+      ;;
+    pacman)
+      echo "sudo pacman -S $*"
+      ;;
+    apt)
+      echo "sudo apt-get update && sudo apt-get install -y $*"
+      ;;
+    *)
+      echo "Install the following packages manually: $*"
+      ;;
+  esac
+}
+
+show_node_manual_install_hint() {
+  case "$PKG_MANAGER" in
+    dnf)
+      echo "  sudo dnf install -y nodejs"
+      ;;
+    pacman)
+      echo "  sudo pacman -S nodejs npm"
+      ;;
+    *)
+      echo "  sudo apt-get install -y curl"
+      echo "  curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/setup_node.sh"
+      echo "  sudo bash /tmp/setup_node.sh"
+      echo "  sudo apt-get install -y nodejs"
+      ;;
+  esac
+}
+
+install_nodejs_runtime() {
+  case "$PKG_MANAGER" in
+    dnf)
+      pkg_install --quiet nodejs
+      ;;
+    pacman)
+      pkg_install --quiet nodejs npm || pkg_install --quiet nodejs
+      ;;
+    apt)
+      command -v curl &>/dev/null || return 1
+      download_and_execute "https://deb.nodesource.com/setup_22.x" "NodeSource" \
+        && pkg_install --quiet nodejs
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+ensure_python_venv_support() {
+  if python3 -c "import ensurepip" &>/dev/null 2>&1; then
+    return 0
+  fi
+
+  info "Installing Python virtual environment tooling..."
+  case "$PKG_MANAGER" in
+    apt)
+      pkg_update || true
+      pkg_install --quiet python3-venv \
+        || pkg_install --quiet "python3.$(python3 -c 'import sys;print(sys.version_info.minor)')-venv" \
+        || pkg_install --quiet python3-full \
+        || return 1
+      ;;
+    dnf)
+      pkg_install --quiet python3-pip || return 1
+      ;;
+    pacman)
+      pkg_install --quiet python-pip || return 1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  python3 -c "import ensurepip" &>/dev/null 2>&1 || python3 -m venv --help &>/dev/null 2>&1
+}
+
+install_gh_cli_pkg() {
+  if command -v gh &>/dev/null; then
+    return 0
+  fi
+
+  case "$PKG_MANAGER" in
+    dnf|pacman)
+      pkg_install --quiet gh
+      ;;
+    apt)
+      pkg_install --quiet gh && return 0
+
+      type -p wget >/dev/null || pkg_install --quiet wget || return 1
+      run_privileged mkdir -p -m 755 /etc/apt/keyrings || return 1
+
+      local out
+      out=$(mktemp) || return 1
+      if ! wget -nv -O"$out" https://cli.github.com/packages/githubcli-archive-keyring.gpg 2>/dev/null \
+        || ! run_privileged tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null <"$out" \
+        || ! run_privileged chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+        || ! echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+          | run_privileged tee /etc/apt/sources.list.d/github-cli-stable.list >/dev/null \
+        || ! pkg_update \
+        || ! pkg_install --quiet gh; then
+        rm -f "$out"
+        return 1
+      fi
+
+      rm -f "$out"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+install_1password_cli_pkg() {
+  if command -v op &>/dev/null; then
+    return 0
+  fi
+
+  case "$PKG_MANAGER" in
+    dnf)
+      local repo_file
+      repo_file=$(mktemp) || return 1
+      cat >"$repo_file" <<'EOF'
+[1password]
+name=1Password Stable Channel
+baseurl=https://downloads.1password.com/linux/rpm/stable/$basearch
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://downloads.1password.com/linux/keys/1password.asc
+EOF
+      run_privileged install -D -m 644 "$repo_file" /etc/yum.repos.d/1password.repo || {
+        rm -f "$repo_file"
+        return 1
+      }
+      rm -f "$repo_file"
+      pkg_install --quiet 1password-cli || {
+        run_privileged rm -f /etc/yum.repos.d/1password.repo 2>/dev/null || true
+        return 1
+      }
+      ;;
+    apt)
+      run_privileged rm -f /usr/share/keyrings/1password-archive-keyring.gpg 2>/dev/null || true
+      run_privileged rm -f /usr/share/debsig/keyrings/AC2D62742012EA22/debsig.gpg 2>/dev/null || true
+      run_privileged rm -f /etc/apt/sources.list.d/1password.list 2>/dev/null || true
+
+      if ! curl -sS https://downloads.1password.com/linux/keys/1password.asc 2>/dev/null \
+          | gpg --batch --yes --dearmor --output - 2>/dev/null \
+          | run_privileged tee /usr/share/keyrings/1password-archive-keyring.gpg >/dev/null \
+        || ! run_privileged chmod a+r /usr/share/keyrings/1password-archive-keyring.gpg \
+        || ! echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/$(dpkg --print-architecture) stable main" \
+          | run_privileged tee /etc/apt/sources.list.d/1password.list >/dev/null \
+        || ! run_privileged mkdir -p /etc/debsig/policies/AC2D62742012EA22/ \
+        || ! curl -sS https://downloads.1password.com/linux/debian/debsig/1password.pol \
+          | run_privileged tee /etc/debsig/policies/AC2D62742012EA22/1password.pol >/dev/null \
+        || ! run_privileged mkdir -p /usr/share/debsig/keyrings/AC2D62742012EA22 \
+        || ! curl -sS https://downloads.1password.com/linux/keys/1password.asc 2>/dev/null \
+          | gpg --batch --yes --dearmor --output - 2>/dev/null \
+          | run_privileged tee /usr/share/debsig/keyrings/AC2D62742012EA22/debsig.gpg >/dev/null \
+        || ! run_privileged chmod a+r /usr/share/debsig/keyrings/AC2D62742012EA22/debsig.gpg \
+        || ! pkg_update \
+        || ! pkg_install --quiet 1password-cli; then
+        run_privileged rm -f /etc/apt/sources.list.d/1password.list 2>/dev/null || true
+        return 1
+      fi
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+install_caddy_pkg() {
+  if command -v caddy &>/dev/null; then
+    return 0
+  fi
+
+  case "$PKG_MANAGER" in
+    dnf)
+      pkg_install --quiet caddy
+      ;;
+    apt)
+      pkg_install --quiet debian-keyring debian-archive-keyring apt-transport-https curl gnupg || return 1
+      run_privileged rm -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null || true
+
+      if ! curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+          | gpg --batch --yes --dearmor --output - 2>/dev/null \
+          | run_privileged tee /usr/share/keyrings/caddy-stable-archive-keyring.gpg >/dev/null \
+        || ! run_privileged chmod a+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg \
+        || ! curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+          | run_privileged tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null \
+        || ! pkg_update \
+        || ! pkg_install --quiet caddy; then
+        run_privileged rm -f /etc/apt/sources.list.d/caddy-stable.list 2>/dev/null || true
+        return 1
+      fi
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+detect_firewall_backend() {
+  if command -v firewall-cmd &>/dev/null || [ "$DEFAULT_FIREWALL" = "firewalld" ]; then
+    echo "firewalld"
+  elif command -v ufw &>/dev/null || [ "$DEFAULT_FIREWALL" = "ufw" ]; then
+    echo "ufw"
+  else
+    echo "none"
+  fi
+}
+
+firewall_is_active() {
+  local backend="${1:-$(detect_firewall_backend)}"
+  case "$backend" in
+    firewalld)
+      systemctl is-active --quiet firewalld 2>/dev/null
+      ;;
+    ufw)
+      local status
+      status=$(ufw status 2>/dev/null | head -1)
+      [[ "$status" == *"active"* ]]
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+install_firewall_backend() {
+  local backend="${1:-$(detect_firewall_backend)}"
+  case "$backend" in
+    firewalld)
+      pkg_install --quiet firewalld
+      ;;
+    ufw)
+      pkg_install --quiet ufw
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+configure_firewall_baseline() {
+  local backend="${1:-$(detect_firewall_backend)}"
+
+  case "$backend" in
+    firewalld)
+      run_privileged systemctl enable --now firewalld >/dev/null 2>&1 || return 1
+      run_privileged firewall-cmd --permanent --add-service=ssh >/dev/null 2>&1 || return 1
+      if [ "${CONSOLE_SECURITY:-1}" = "2" ] && [ -n "${CONSOLE_DOMAIN:-}" ]; then
+        run_privileged firewall-cmd --permanent --add-service=http >/dev/null 2>&1 || return 1
+        run_privileged firewall-cmd --permanent --add-service=https >/dev/null 2>&1 || return 1
+      fi
+      run_privileged firewall-cmd --reload >/dev/null 2>&1 || return 1
+      ;;
+    ufw)
+      run_privileged ufw allow 22/tcp comment "SSH" >/dev/null 2>&1 || return 1
+      if [ "${CONSOLE_SECURITY:-1}" = "2" ] && [ -n "${CONSOLE_DOMAIN:-}" ]; then
+        run_privileged ufw allow 80/tcp comment "HTTP (Caddy redirect)" >/dev/null 2>&1 || return 1
+        run_privileged ufw allow 443/tcp comment "HTTPS (Caddy)" >/dev/null 2>&1 || return 1
+      fi
+      if ! firewall_is_active "$backend"; then
+        echo "y" | run_privileged ufw enable >/dev/null 2>&1 || return 1
+      fi
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+detect_platform
+
+# ============================================================
 # Pre-flight checks
 # ============================================================
 
@@ -210,11 +600,12 @@ preflight() {
 
   # Auto-install Node.js 22 if not found or version too old
   local need_node=false
+  local node_version_major=""
   if ! command -v node &>/dev/null; then
     need_node=true
   else
-    NODE_VERSION=$(node -v | sed 's/v//' | cut -d. -f1)
-    if [ "$NODE_VERSION" -lt 22 ]; then
+    node_version_major=$(node -v | sed 's/v//' | cut -d. -f1)
+    if [ "$node_version_major" -lt 22 ]; then
       warn "Node.js 22+ required (found v$(node -v))"
       need_node=true
     fi
@@ -222,24 +613,19 @@ preflight() {
 
   if [ "$need_node" = true ]; then
     info "Installing Node.js 22..."
-    if command -v curl &>/dev/null; then
-      # C-1: Download-verify-execute instead of curl|bash
-      download_and_execute "https://deb.nodesource.com/setup_22.x" "NodeSource" \
-        && apt-get install -y nodejs 2>/dev/null \
-        && success "Node.js $(node -v) installed" \
-        || {
-          error "Could not auto-install Node.js. Install manually:"
-          echo "  curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/setup_node.sh"
-          echo "  sudo bash /tmp/setup_node.sh"
-          echo "  sudo apt-get install -y nodejs"
-          exit 1
-        }
+    if install_nodejs_runtime; then
+      if command -v node &>/dev/null; then
+        node_version_major=$(node -v | sed 's/v//' | cut -d. -f1)
+      fi
+      if ! command -v node &>/dev/null || [ -z "$node_version_major" ] || [ "$node_version_major" -lt 22 ]; then
+        error "Installed Node.js is still below 22. Install a newer version manually:"
+        show_node_manual_install_hint
+        exit 1
+      fi
+      success "Node.js $(node -v) installed"
     else
-      error "curl not found. Install Node.js 22 manually:"
-      echo "  apt-get install -y curl"
-      echo "  curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/setup_node.sh"
-      echo "  sudo bash /tmp/setup_node.sh"
-      echo "  sudo apt-get install -y nodejs"
+      error "Could not auto-install Node.js. Install Node.js 22 manually:"
+      show_node_manual_install_hint
       exit 1
     fi
   else
@@ -247,39 +633,25 @@ preflight() {
   fi
 
   # Auto-install essential build tools
-  local missing_pkgs=""
-  command -v git &>/dev/null || missing_pkgs="$missing_pkgs git"
-  command -v python3 &>/dev/null || missing_pkgs="$missing_pkgs python3"
-  command -v make &>/dev/null || missing_pkgs="$missing_pkgs build-essential"
-  command -v pip3 &>/dev/null || missing_pkgs="$missing_pkgs python3-pip"
-  if ! python3 -c "import ensurepip" &>/dev/null 2>&1; then
-    missing_pkgs="$missing_pkgs python3-venv"
+  local missing_pkgs=()
+  local build_pkgs=()
+  command -v git &>/dev/null || missing_pkgs+=(git)
+  command -v python3 &>/dev/null || missing_pkgs+=(python3)
+  if ! command -v make &>/dev/null; then
+    read -r -a build_pkgs <<<"$(build_tool_packages)"
+    missing_pkgs+=("${build_pkgs[@]}")
   fi
+  command -v pip3 &>/dev/null || missing_pkgs+=(python3-pip)
 
-  if [ -n "$missing_pkgs" ]; then
-    info "Installing dependencies:$missing_pkgs"
-    info "Running apt-get update first..."
-    sudo apt-get update -qq 2>/dev/null || apt-get update -qq 2>/dev/null || true
-    if ! sudo apt-get install -y $missing_pkgs 2>/dev/null && ! apt-get install -y $missing_pkgs 2>/dev/null; then
-      # If python3-venv failed, try python3-full as fallback (some Ubuntu versions need it)
-      if echo "$missing_pkgs" | grep -q "python3-venv"; then
-        info "python3-venv failed, trying python3-full as fallback..."
-        if ! sudo apt-get install -y python3-full 2>/dev/null && ! apt-get install -y python3-full 2>/dev/null; then
-          error "Failed to install required packages:$missing_pkgs"
-          echo ""
-          echo "  Please install manually and re-run setup:"
-          echo "    sudo apt-get update && sudo apt-get install -y$missing_pkgs"
-          echo ""
-          echo "  If python3-venv is unavailable, try: sudo apt-get install -y python3-full"
-          exit 1
-        fi
-      else
-        error "Failed to install required packages:$missing_pkgs"
-        echo ""
-        echo "  Please install manually and re-run setup:"
-        echo "    sudo apt-get update && sudo apt-get install -y$missing_pkgs"
-        exit 1
-      fi
+  if [ "${#missing_pkgs[@]}" -gt 0 ]; then
+    info "Installing dependencies: ${missing_pkgs[*]}"
+    pkg_update || true
+    if ! pkg_install "${missing_pkgs[@]}"; then
+      error "Failed to install required packages: ${missing_pkgs[*]}"
+      echo ""
+      echo "  Please install manually and re-run setup:"
+      echo "    $(manual_pkg_install_hint "${missing_pkgs[@]}")"
+      exit 1
     fi
     success "Dependencies installed"
   fi
@@ -1542,24 +1914,28 @@ install_octave() {
     source "$OCTAVE_VENV/bin/activate" 2>/dev/null || true
     uv pip install octave-mcp 2>&1 | tail -1
   elif python3 -m venv --help &>/dev/null 2>&1; then
-    # Ensure python3-venv is available (Ubuntu/Debian need it separately)
-    if ! python3 -c "import ensurepip" &>/dev/null; then
-      info "Installing python3-venv (required for virtual environments)..."
-      sudo apt-get update -qq 2>/dev/null || true
-      if ! sudo apt-get install -y python3-venv 2>/dev/null \
-        && ! sudo apt-get install -y "python3.$(python3 -c 'import sys;print(sys.version_info.minor)')-venv" 2>/dev/null \
-        && ! sudo apt-get install -y python3-full 2>/dev/null; then
-        error "Could not install python3-venv."
-        echo "  Run manually: sudo apt-get update && sudo apt-get install -y python3-venv"
-        echo "  Or try: sudo apt-get install -y python3-full"
-        return
-      fi
+    # Debian/Ubuntu often need python3-venv separately; Fedora usually doesn't.
+    if ! ensure_python_venv_support; then
+      error "Could not install Python virtual environment tooling."
+      case "$PKG_MANAGER" in
+        apt)
+          echo "  Run manually: sudo apt-get update && sudo apt-get install -y python3-venv"
+          echo "  Or try: sudo apt-get install -y python3-full"
+          ;;
+        dnf)
+          echo "  Run manually: sudo dnf install -y python3-pip"
+          ;;
+        pacman)
+          echo "  Run manually: sudo pacman -S python-pip"
+          ;;
+      esac
+      return
     fi
     info "Installing OCTAVE via python3 venv..."
     python3 -m venv "$OCTAVE_VENV"
     "$OCTAVE_VENV/bin/pip" install --quiet octave-mcp 2>&1
   else
-    warn "Cannot install OCTAVE — neither uv nor python3-venv found."
+    warn "Cannot install OCTAVE — neither uv nor Python virtual environments are available."
     warn "Install manually: uv venv ~/.octave-venv && uv pip install octave-mcp"
     return
   fi
@@ -1717,6 +2093,9 @@ install_scrapling() {
     if command -v apt-get &>/dev/null; then
       "$SCRAPLING_VENV/bin/python" -m playwright install-deps chromium 2>/dev/null \
         || warn "Could not install Chromium system deps. Run: python3 -m playwright install-deps chromium"
+    elif command -v dnf &>/dev/null; then
+      warn "Playwright does not auto-install Chromium system dependencies on Fedora."
+      warn "If browser launches fail, install the required Fedora libraries manually."
     fi
 
     success "Scrapling installed with all dependencies"
@@ -1748,15 +2127,7 @@ install_github_skill() {
   # Install gh CLI if not present
   if ! command -v gh &>/dev/null; then
     info "Installing GitHub CLI (gh)..."
-    if command -v apt-get &>/dev/null; then
-      (type -p wget >/dev/null || apt-get install wget -y -qq) \
-        && mkdir -p -m 755 /etc/apt/keyrings \
-        && wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
-        && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
-        && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
-        && apt-get update -qq && apt-get install gh -y -qq \
-      || warn "Could not install gh CLI automatically. Install manually: https://cli.github.com"
-    else
+    if ! install_gh_cli_pkg; then
       warn "Install gh CLI manually: https://cli.github.com"
     fi
   fi
@@ -2119,12 +2490,17 @@ show_summary() {
     echo "    • fail2ban — brute-force protection (SSH jail active)"
   fi
   # Show hardening results if run
-  if command -v ufw &>/dev/null; then
-    local UFW_NOW
-    UFW_NOW=$(ufw status 2>/dev/null | head -1)
-    if [[ "$UFW_NOW" == *"active"* ]]; then
-      echo "    • UFW firewall — enabled (SSH allowed)"
-    fi
+  local SUMMARY_FIREWALL
+  SUMMARY_FIREWALL=$(detect_firewall_backend)
+  if firewall_is_active "$SUMMARY_FIREWALL"; then
+    case "$SUMMARY_FIREWALL" in
+      firewalld)
+        echo "    • firewalld — enabled (SSH allowed)"
+        ;;
+      ufw)
+        echo "    • UFW firewall — enabled (SSH allowed)"
+        ;;
+    esac
   fi
   local SSHD_ROOT
   SSHD_ROOT=$(grep -E "^\s*PermitRootLogin\s+" /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | tail -1)
@@ -2389,27 +2765,11 @@ CONSOLEEOF
             info "Installing Caddy web server..."
             local CADDY_INSTALLED=false
 
-            if command -v apt-get &>/dev/null; then
-              # Method 1: Official apt repo
-              apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https curl gnupg 2>/dev/null
-
-              # Remove stale/expired keyring before re-downloading
-              rm -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null
-
-              if curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
-                  | gpg --batch --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null \
-                && chmod a+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg \
-                && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
-                  | tee /etc/apt/sources.list.d/caddy-stable.list > /dev/null \
-                && apt-get update -qq 2>/dev/null \
-                && apt-get install caddy -y -qq 2>/dev/null; then
-                success "Caddy installed via apt"
-                CADDY_INSTALLED=true
-              else
-                warn "Caddy apt repo failed. Trying static binary fallback..."
-                # Clean up failed apt repo to avoid future update errors
-                rm -f /etc/apt/sources.list.d/caddy-stable.list 2>/dev/null
-              fi
+            if install_caddy_pkg; then
+              success "Caddy installed via package manager"
+              CADDY_INSTALLED=true
+            else
+              warn "Package-manager Caddy install failed. Trying static binary fallback..."
             fi
 
             # Method 2: Static binary from GitHub releases
@@ -2658,31 +3018,24 @@ CADDYEOF
         success "fail2ban service is running"
       else
         info "Starting fail2ban service..."
-        sudo systemctl enable fail2ban 2>/dev/null && sudo systemctl start fail2ban 2>/dev/null \
+        run_privileged systemctl enable fail2ban 2>/dev/null && run_privileged systemctl start fail2ban 2>/dev/null \
           && success "fail2ban enabled and started" \
           || warn "Could not start fail2ban. Run: sudo systemctl enable --now fail2ban"
       fi
     else
       info "Installing fail2ban..."
-      if command -v apt-get &>/dev/null; then
-        sudo apt-get update -qq && sudo apt-get install -y -qq fail2ban \
-          && success "fail2ban installed" \
-          || warn "Failed to install fail2ban. Run: sudo apt-get install fail2ban"
-      elif command -v dnf &>/dev/null; then
-        sudo dnf install -y -q fail2ban \
-          && success "fail2ban installed" \
-          || warn "Failed to install fail2ban. Run: sudo dnf install fail2ban"
-      elif command -v pacman &>/dev/null; then
-        sudo pacman -S --noconfirm fail2ban \
-          && success "fail2ban installed" \
-          || warn "Failed to install fail2ban. Run: sudo pacman -S fail2ban"
+      pkg_update || true
+      if pkg_install --quiet fail2ban; then
+        success "fail2ban installed"
+      elif [ -n "$PKG_MANAGER" ]; then
+        warn "Failed to install fail2ban. Run: $(manual_pkg_install_hint fail2ban)"
       else
         warn "Package manager not detected. Install fail2ban manually for your distro."
       fi
 
       # Enable and start if installed
       if command -v fail2ban-client &>/dev/null; then
-        sudo systemctl enable fail2ban 2>/dev/null && sudo systemctl start fail2ban 2>/dev/null \
+        run_privileged systemctl enable fail2ban 2>/dev/null && run_privileged systemctl start fail2ban 2>/dev/null \
           && success "fail2ban enabled and started" \
           || warn "Could not start fail2ban. Run: sudo systemctl enable --now fail2ban"
       fi
@@ -2692,7 +3045,7 @@ CADDYEOF
     local JAIL_LOCAL="/etc/fail2ban/jail.local"
     if [ ! -f "$JAIL_LOCAL" ] && command -v fail2ban-client &>/dev/null; then
       info "Creating basic SSH jail configuration..."
-      sudo tee "$JAIL_LOCAL" > /dev/null 2>&1 <<'JAIL_EOF'
+      run_privileged tee "$JAIL_LOCAL" > /dev/null 2>&1 <<'JAIL_EOF'
 [DEFAULT]
 bantime  = 1h
 findtime = 10m
@@ -2702,7 +3055,7 @@ maxretry = 5
 enabled = true
 JAIL_EOF
       if [ $? -eq 0 ]; then
-        sudo systemctl restart fail2ban 2>/dev/null
+        run_privileged systemctl restart fail2ban 2>/dev/null
         success "SSH jail configured (ban 1h after 5 failures in 10m)"
       else
         warn "Could not create jail.local. Configure manually: /etc/fail2ban/jail.local"
@@ -3030,7 +3383,7 @@ install_skill_deps() {
   }
 
   # ============================================================
-  # System tools (via apt)
+  # System tools (via package manager)
   # ============================================================
 
   echo -e "  ${BOLD}System packages:${NC}"
@@ -3038,7 +3391,7 @@ install_skill_deps() {
   # --- ffmpeg (video-frames skill) ---
   if ! command -v ffmpeg &>/dev/null; then
     info "Installing ffmpeg..."
-    apt-get install -y -qq ffmpeg 2>/dev/null \
+    pkg_install --quiet ffmpeg 2>/dev/null \
       && success "ffmpeg installed" && INSTALLED=$((INSTALLED + 1)) \
       || { warn "ffmpeg install failed"; FAILED=$((FAILED + 1)); }
   else
@@ -3049,7 +3402,7 @@ install_skill_deps() {
   # --- tmux ---
   if ! command -v tmux &>/dev/null; then
     info "Installing tmux..."
-    apt-get install -y -qq tmux 2>/dev/null \
+    pkg_install --quiet tmux 2>/dev/null \
       && success "tmux installed" && INSTALLED=$((INSTALLED + 1)) \
       || { warn "tmux install failed"; FAILED=$((FAILED + 1)); }
   else
@@ -3060,7 +3413,7 @@ install_skill_deps() {
   # --- jq (session-logs, trello) ---
   if ! command -v jq &>/dev/null; then
     info "Installing jq..."
-    apt-get install -y -qq jq 2>/dev/null \
+    pkg_install --quiet jq 2>/dev/null \
       && success "jq installed" && INSTALLED=$((INSTALLED + 1)) \
       || { warn "jq install failed"; FAILED=$((FAILED + 1)); }
   else
@@ -3071,7 +3424,7 @@ install_skill_deps() {
   # --- ripgrep (session-logs) ---
   if ! command -v rg &>/dev/null; then
     info "Installing ripgrep..."
-    apt-get install -y -qq ripgrep 2>/dev/null \
+    pkg_install --quiet ripgrep 2>/dev/null \
       && success "ripgrep installed" && INSTALLED=$((INSTALLED + 1)) \
       || { warn "ripgrep install failed"; FAILED=$((FAILED + 1)); }
   else
@@ -3234,19 +3587,11 @@ install_skill_deps() {
 
   if ! command -v gh &>/dev/null; then
     info "Installing GitHub CLI (gh)..."
-    if command -v apt-get &>/dev/null; then
-      (type -p wget >/dev/null || apt-get install -y -qq wget) \
-        && mkdir -p -m 755 /etc/apt/keyrings \
-        && out=$(mktemp) && wget -nv -O"$out" https://cli.github.com/packages/githubcli-archive-keyring.gpg 2>/dev/null \
-        && cat "$out" | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
-        && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
-        && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli-stable.list > /dev/null \
-        && apt-get update -qq && apt-get install gh -y -qq \
-        && success "gh CLI installed" && INSTALLED=$((INSTALLED + 1)) \
-        || { warn "gh install failed — install manually: https://cli.github.com"; FAILED=$((FAILED + 1)); }
-      rm -f "$out" 2>/dev/null
+    if install_gh_cli_pkg; then
+      success "gh CLI installed"
+      INSTALLED=$((INSTALLED + 1))
     else
-      warn "Could not install gh CLI (no apt). Install manually: https://cli.github.com"
+      warn "Could not install gh CLI automatically. Install manually: https://cli.github.com"
       FAILED=$((FAILED + 1))
     fi
   else
@@ -3263,31 +3608,11 @@ install_skill_deps() {
 
   if ! command -v op &>/dev/null; then
     info "Installing 1Password CLI..."
-    if command -v apt-get &>/dev/null; then
-      # Clean up any stale 1Password GPG keys/repos first
-      rm -f /usr/share/keyrings/1password-archive-keyring.gpg 2>/dev/null
-      rm -f /usr/share/debsig/keyrings/AC2D62742012EA22/debsig.gpg 2>/dev/null
-      rm -f /etc/apt/sources.list.d/1password.list 2>/dev/null
-
-      curl -sS https://downloads.1password.com/linux/keys/1password.asc 2>/dev/null \
-        | gpg --batch --yes --dearmor --output /usr/share/keyrings/1password-archive-keyring.gpg 2>/dev/null \
-        && chmod a+r /usr/share/keyrings/1password-archive-keyring.gpg \
-        && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/$(dpkg --print-architecture) stable main" \
-          | tee /etc/apt/sources.list.d/1password.list > /dev/null \
-        && mkdir -p /etc/debsig/policies/AC2D62742012EA22/ \
-        && curl -sS https://downloads.1password.com/linux/debian/debsig/1password.pol \
-          | tee /etc/debsig/policies/AC2D62742012EA22/1password.pol > /dev/null \
-        && mkdir -p /usr/share/debsig/keyrings/AC2D62742012EA22 \
-        && curl -sS https://downloads.1password.com/linux/keys/1password.asc \
-          | gpg --batch --yes --dearmor --output /usr/share/debsig/keyrings/AC2D62742012EA22/debsig.gpg 2>/dev/null \
-        && chmod a+r /usr/share/debsig/keyrings/AC2D62742012EA22/debsig.gpg \
-        && apt-get update -qq 2>/dev/null && apt-get install -y -qq 1password-cli \
-        && success "1Password CLI installed" && INSTALLED=$((INSTALLED + 1)) \
-        || { warn "1Password CLI install failed"; FAILED=$((FAILED + 1));
-             # Clean up failed repo so it doesn't break future apt operations
-             rm -f /etc/apt/sources.list.d/1password.list 2>/dev/null; }
+    if install_1password_cli_pkg; then
+      success "1Password CLI installed"
+      INSTALLED=$((INSTALLED + 1))
     else
-      warn "Skipping 1Password CLI (no apt)"
+      warn "Skipping 1Password CLI (unsupported package manager or repo failure)"
       FAILED=$((FAILED + 1))
     fi
   else
@@ -3560,50 +3885,73 @@ harden_server() {
 
   local CHANGES_MADE=false
 
-  # --- 1. Firewall (UFW) ---
+  # --- 1. Firewall ---
+  local FIREWALL_BACKEND
+  FIREWALL_BACKEND=$(detect_firewall_backend)
+  local FIREWALL_LABEL="Firewall"
+  case "$FIREWALL_BACKEND" in
+    firewalld) FIREWALL_LABEL="Firewall (firewalld)" ;;
+    ufw) FIREWALL_LABEL="Firewall (UFW)" ;;
+  esac
+
   echo ""
-  echo -e "  ${BOLD}1. Firewall (UFW)${NC}"
+  echo -e "  ${BOLD}1. ${FIREWALL_LABEL}${NC}"
   echo ""
 
-  if command -v ufw &>/dev/null; then
-    local UFW_STATUS
-    UFW_STATUS=$(ufw status 2>/dev/null | head -1)
-    if [[ "$UFW_STATUS" == *"inactive"* ]]; then
-      warn "Firewall is INACTIVE — all ports are exposed to the internet."
-      info "This will allow SSH (port 22) and block everything else from outside."
-      ask "Enable UFW firewall? [Y/n]"
-      read -r ENABLE_UFW
-      ENABLE_UFW="${ENABLE_UFW:-Y}"
-      if [[ "$ENABLE_UFW" =~ ^[Yy] ]]; then
-        ufw allow 22/tcp comment "SSH" >/dev/null 2>&1
-        # If Caddy/SSL was configured, allow HTTPS too
+  if [ "$FIREWALL_BACKEND" = "none" ]; then
+    warn "No supported firewall backend detected for this distro."
+  elif ! command -v firewall-cmd &>/dev/null && ! command -v ufw &>/dev/null; then
+    info "Installing ${FIREWALL_BACKEND}..."
+    if install_firewall_backend "$FIREWALL_BACKEND"; then
+      if configure_firewall_baseline "$FIREWALL_BACKEND"; then
+        success "${FIREWALL_BACKEND} installed and enabled (SSH allowed)"
+        CHANGES_MADE=true
+      else
+        warn "Installed ${FIREWALL_BACKEND}, but could not apply baseline rules automatically"
+      fi
+    else
+      case "$FIREWALL_BACKEND" in
+        firewalld)
+          warn "Could not install firewalld. Install manually: sudo dnf install firewalld"
+          ;;
+        ufw)
+          warn "Could not install UFW. Install manually: sudo apt-get install ufw"
+          ;;
+      esac
+    fi
+  elif firewall_is_active "$FIREWALL_BACKEND"; then
+    success "Firewall already active"
+    if [ "${CONSOLE_SECURITY:-1}" = "2" ] && [ -n "${CONSOLE_DOMAIN:-}" ]; then
+      if configure_firewall_baseline "$FIREWALL_BACKEND"; then
+        info "Ensured HTTP/HTTPS access for the Caddy reverse proxy"
+      fi
+    fi
+  else
+    warn "Firewall is INACTIVE — all ports are exposed to the internet."
+    info "This will allow SSH (port 22) and block everything else from outside."
+    case "$FIREWALL_BACKEND" in
+      firewalld)
+        ask "Enable firewalld? [Y/n]"
+        read -r ENABLE_FIREWALL
+        ;;
+      ufw)
+        ask "Enable UFW firewall? [Y/n]"
+        read -r ENABLE_FIREWALL
+        ;;
+    esac
+    ENABLE_FIREWALL="${ENABLE_FIREWALL:-Y}"
+    if [[ "$ENABLE_FIREWALL" =~ ^[Yy] ]]; then
+      if configure_firewall_baseline "$FIREWALL_BACKEND"; then
         if [ "${CONSOLE_SECURITY:-1}" = "2" ] && [ -n "${CONSOLE_DOMAIN:-}" ]; then
-          ufw allow 80/tcp comment "HTTP (Caddy redirect)" >/dev/null 2>&1
-          ufw allow 443/tcp comment "HTTPS (Caddy)" >/dev/null 2>&1
           info "Allowed ports 80/443 for Caddy SSL"
         fi
-        echo "y" | ufw enable >/dev/null 2>&1
         success "Firewall enabled (SSH allowed, rest blocked from outside)"
         CHANGES_MADE=true
       else
-        warn "Skipped — firewall remains inactive"
+        warn "Could not enable ${FIREWALL_BACKEND} automatically"
       fi
     else
-      success "Firewall already active"
-    fi
-  else
-    info "Installing UFW..."
-    if apt-get install -y -qq ufw 2>/dev/null; then
-      ufw allow 22/tcp comment "SSH" >/dev/null 2>&1
-      if [ "${CONSOLE_SECURITY:-1}" = "2" ] && [ -n "${CONSOLE_DOMAIN:-}" ]; then
-        ufw allow 80/tcp comment "HTTP (Caddy redirect)" >/dev/null 2>&1
-        ufw allow 443/tcp comment "HTTPS (Caddy)" >/dev/null 2>&1
-      fi
-      echo "y" | ufw enable >/dev/null 2>&1
-      success "UFW installed and enabled (SSH allowed)"
-      CHANGES_MADE=true
-    else
-      warn "Could not install UFW. Install manually: apt-get install ufw"
+      warn "Skipped — firewall remains inactive"
     fi
   fi
 
@@ -3615,20 +3963,29 @@ harden_server() {
     info "copilot-api binds to 0.0.0.0:4141 by default (no --host flag)."
     info "This means it's accessible from the internet if firewall is off."
 
-    if command -v ufw &>/dev/null; then
-      # UFW handles this — port 4141 isn't in the allow list, so it's blocked
-      local UFW_STATUS_NOW
-      UFW_STATUS_NOW=$(ufw status 2>/dev/null | head -1)
-      if [[ "$UFW_STATUS_NOW" == *"active"* ]]; then
-        success "Port 4141 is blocked from external access by UFW"
-      else
-        warn "UFW is not active — port 4141 may be exposed"
-        info "Enable UFW or manually block: ufw deny in on any to any port 4141"
-      fi
+    if [ "$FIREWALL_BACKEND" != "none" ] && firewall_is_active "$FIREWALL_BACKEND"; then
+      case "$FIREWALL_BACKEND" in
+        firewalld)
+          success "Port 4141 is blocked from external access by firewalld unless you open it explicitly"
+          ;;
+        ufw)
+          success "Port 4141 is blocked from external access by UFW"
+          ;;
+      esac
     else
       warn "No firewall detected — port 4141 may be internet-exposed"
-      info "Bind copilot-api to localhost with iptables:"
-      info "  iptables -A INPUT -p tcp --dport 4141 ! -s 127.0.0.1 -j DROP"
+      case "$FIREWALL_BACKEND" in
+        firewalld)
+          info "Enable firewalld before exposing this machine to the internet"
+          ;;
+        ufw)
+          info "Enable UFW or manually block: ufw deny in on any to any port 4141"
+          ;;
+        *)
+          info "Bind copilot-api to localhost with iptables:"
+          info "  iptables -A INPUT -p tcp --dport 4141 ! -s 127.0.0.1 -j DROP"
+          ;;
+      esac
     fi
   fi
 
