@@ -454,18 +454,65 @@ EOF
   [ -n "$(runtime_command_path openclaw)" ]
 }
 
+clawhub_package_dir() {
+  local clawhub_bin
+  local resolved
+  local npm_root
+
+  clawhub_bin="$(runtime_command_path clawhub)"
+  if [ -n "$clawhub_bin" ]; then
+    resolved="$(realpath "$clawhub_bin" 2>/dev/null || readlink -f "$clawhub_bin" 2>/dev/null || echo "$clawhub_bin")"
+    case "$resolved" in
+      */bin/clawdhub.js)
+        dirname "$(dirname "$resolved")"
+        return 0
+        ;;
+    esac
+  fi
+
+  npm_root="$(npm_global_root 2>/dev/null || true)"
+  if [ -n "$npm_root" ] && [ -d "$npm_root/clawhub" ]; then
+    echo "$npm_root/clawhub"
+    return 0
+  fi
+
+  return 1
+}
+
 CLAW_HUB_BIN=""
 
 ensure_clawhub_available() {
+  local node_bin
+  local package_dir
+  local clawhub_js
+
+  ensure_runtime_command_aliases
   CLAW_HUB_BIN="$(runtime_command_path clawhub)"
-  if [ -n "$CLAW_HUB_BIN" ]; then
+  if [ -n "$CLAW_HUB_BIN" ] && "$CLAW_HUB_BIN" --help >/dev/null 2>&1; then
     return 0
   fi
 
   npm_global_install --ignore-scripts clawhub >/dev/null 2>&1 || return 1
+
+  node_bin="$(runtime_command_path node)"
+  package_dir="$(clawhub_package_dir 2>/dev/null || true)"
+  clawhub_js="$package_dir/bin/clawdhub.js"
+
+  if [ -n "$node_bin" ] && [ -n "$package_dir" ] && [ -f "$clawhub_js" ]; then
+    run_privileged tee /usr/local/bin/clawhub > /dev/null <<EOF
+#!/usr/bin/env bash
+exec "$node_bin" "$clawhub_js" "\$@"
+EOF
+    run_privileged chmod 755 /usr/local/bin/clawhub || return 1
+    run_privileged ln -sf /usr/local/bin/clawhub /usr/local/bin/clawdhub || return 1
+    if command -v restorecon &>/dev/null; then
+      run_privileged restorecon -v /usr/local/bin/clawhub /usr/local/bin/clawdhub "$clawhub_js" >/dev/null 2>&1 || true
+    fi
+  fi
+
   hash -r 2>/dev/null || true
   CLAW_HUB_BIN="$(runtime_command_path clawhub)"
-  [ -n "$CLAW_HUB_BIN" ]
+  [ -n "$CLAW_HUB_BIN" ] && "$CLAW_HUB_BIN" --help >/dev/null 2>&1
 }
 
 show_node_manual_install_hint() {
